@@ -142,8 +142,8 @@ export default class GithubPrs extends View {
     const stat = (label, n, color) =>
       h_flex().gap(5).flex_none().whitespace_nowrap()
         .child(div().text_color(n ? color : t.dim).child(d ? String(n) : "—"))
-        .child(div().text_size(this.top ? 12 : 10.5).text_color(t.dim).child(label));
-    const content = h_flex().id("gp-content").gap(14).items_center().flex_none()
+        .child(div().text_size(this.top ? 11.5 : 10.5).text_color(t.dim).child(label));
+    const content = h_flex().id("gp-content").gap(8).items_center().flex_none()
       .child(svg(`mods/${MOD}/icons/github.svg`).size(this.top ? 16 : 14).text_color(t.muted))
       .child(stat("review", d?.review.length ?? 0, t.ansi3 ?? t.done))
       .child(stat("mine", d?.mine.length ?? 0, t.foreground))
@@ -151,8 +151,8 @@ export default class GithubPrs extends View {
       .child(stat("other", d?.other.length ?? 0, t.foreground))
       .when(this.finished.length > 0, (e) => e.child(stat("to clean", this.finished.length, t.ansi3 ?? t.done)))
       .when(this.error != null, (e) => e.child(div().text_color(t.ansi1 ?? t.blocked).child("!")));
-    return h_flex().id("root").size_full().px(12).items_center().justify_end().overflow_hidden()
-      .bg(t.chrome).border_color(t.border).text_size(this.top ? 13 : 11.8).text_color(t.muted)
+    return h_flex().id("root").size_full().px(8).items_center().justify_end().overflow_hidden()
+      .bg(t.chrome).border_color(t.border).text_size(this.top ? 12 : 11.8).text_color(t.muted)
       .when(this.top, (e) => e.border_b(1)).when(!this.top, (e) => e.border_t(1))
       .child(Popover.new("gp-panel").anchor(this.top ? "top_right" : "bottom_right")
         .open(this.open).overlay_closable(!this.menuUp())
