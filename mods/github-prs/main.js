@@ -188,7 +188,7 @@ export default class GithubPrs extends View {
   prRow(p, i, key, tags, t) {
     return h_flex().id(`gp-${key}-${i}`).gap(8).items_center().px(6).py(4).rounded(5).cursor_pointer()
       .hover((s) => s.bg(t.hover))
-      .tooltip(p.title)
+      .tooltip(`${p.title}\n${p.repo}#${p.number}`)
       .on_mouse_down("left", (e) => this.pick(e, p))
       .child(div().size(7).flex_none().rounded_full().bg(ciColor(p.ci, t)).tooltip(p.ci ? `CI: ${p.ci.toLowerCase()}` : "No CI"))
       .child(v_flex().flex_1().min_w(0).gap(2)
