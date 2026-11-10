@@ -91,7 +91,7 @@ export default class GithubPrs extends View {
 
   apply() {
     if (!this.reply) return;
-    this.data = summarize(this.reply, prefs());
+    this.data = summarize(this.reply, prefs(), prefs().sort);
     const urls = new Set([...this.data.review, ...this.data.mine, ...this.data.other].map((p) => p.url));
     return urls;
   }
@@ -197,6 +197,16 @@ export default class GithubPrs extends View {
       .when(p.draft, (e) => e.child(pill("draft", t.dim, t)));
   }
 
+  // Grouped by repo: a small repo name above each group's first row.
+  groupRows(list, key, tagsOf, t) {
+    const rows = [];
+    list.forEach((p, i) => {
+      if (i === 0 || list[i - 1].repo !== p.repo) rows.push(div().px(6).pt(i ? 4 : 0).text_size(10.5).text_color(t.dim).child(p.repo));
+      rows.push(this.prRow(p, i, key, tagsOf(p), t));
+    });
+    return rows;
+  }
+
   section(title, list, key, tagsOf, t, extra = null) {
     return v_flex().gap(2)
       .child(h_flex().gap(6).items_center().px(6).h(20)
@@ -204,7 +214,7 @@ export default class GithubPrs extends View {
         .child(pill(String(list.length), t.dim, t))
         .when(extra != null, (e) => e.child(pill(extra, t.ansi1 ?? t.blocked, t))))
       .children(list.length
-        ? list.map((p, i) => this.prRow(p, i, key, tagsOf(p), t))
+        ? (prefs().sort === "repo" ? this.groupRows(list, key, tagsOf, t) : list.map((p, i) => this.prRow(p, i, key, tagsOf(p), t)))
         : [div().px(6).text_size(11).text_color(t.dim).child("Nothing waiting")]);
   }
 
@@ -231,11 +241,12 @@ export default class GithubPrs extends View {
     if (d) {
       const parts = [];
       const heights = [];
+      const rowsOf = (l) => l.length + (prefs().sort === "repo" ? new Set(l.map((p) => p.repo)).size * 0.4 : 0); // group headings
       const add = (node, n) => { if (parts.length) parts.push(rule(t)); parts.push(node); heights.push(HEAD_H + Math.max(1, n) * ROW_H); };
       if (this.finished.length) add(this.cleanSection(t), this.finished.length);
-      add(this.section("Review requested", d.review, "r", () => [], t), d.review.length);
-      add(this.section("My PRs", d.mine, "m", (p) => p.reasons, t, d.fix ? `${d.fix} to fix` : null), d.mine.length);
-      add(this.section("Also involving me", d.other, "o", () => [], t), d.other.length);
+      add(this.section("Review requested", d.review, "r", () => [], t), rowsOf(d.review));
+      add(this.section("My PRs", d.mine, "m", (p) => p.reasons, t, d.fix ? `${d.fix} to fix` : null), rowsOf(d.mine));
+      add(this.section("Also involving me", d.other, "o", () => [], t), rowsOf(d.other));
       if (!d.review.length && !d.mine.length && !d.other.length) parts.unshift(div().px(6).text_color(t.dim).child(`No open PRs for ${this.login()}.`));
       const h = heights.reduce((a, b) => a + b, 0) + (heights.length - 1) * SECTION_GAP;
       body.child(v_flex().id("gp-list").w_full().gap(10).h(Math.min(MAX_LIST_H, h)).overflow_y_scrollbar().children(parts));
@@ -306,6 +317,13 @@ export default class GithubPrs extends View {
         .children(this.accounts.map((a, i) => acct(a, a, "Use this login only", i))))
       .child(hint("Nothing is switched globally. The login's token lives only inside the helper process."))
       .child(rule(t))
+      .child(label("Sort"))
+      .child(h_flex().gap(4).children([["attention", "Needs attention first"], ["recent", "Recent activity"], ["repo", "By repo"]].map(([id, name]) =>
+        div().id(`gp-sort-${id}`).flex_1().h(26).rounded(6).flex().items_center().justify_center().cursor_pointer()
+          .border(1).border_color(prefs().sort === id ? t.accent : t.border).hover((s) => s.bg(t.hover))
+          .when(prefs().sort === id, (e) => e.bg(t.selected).text_color(t.foreground))
+          .on_click((_e, cx) => { setShared(KEY_PREFS, { ...prefs(), sort: id }); this.apply(); cx.notify(); })
+          .child(name))))
       .child(label("Refresh"))
       .child(h_flex().gap(4).children(EVERY_CHOICES.map((m) =>
         div().id(`gp-every-${m}`).flex_1().h(26).rounded(6).flex().items_center().justify_center().cursor_pointer()

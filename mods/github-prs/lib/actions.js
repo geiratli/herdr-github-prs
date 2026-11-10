@@ -10,7 +10,7 @@ export const currentLogin = () => prefs().account || shared(KEY_ACTIVE) || "";
 // Git folders belong to a gh account. Before any per-account setting, the old single `roots` list applies to all.
 export const rootsOf = (login) => prefs().folders?.[login] ?? (prefs().folders ? [] : prefs().roots);
 export const setRoots = (login, roots) => { const { roots: _old, ...p } = prefs(); setShared(KEY_PREFS, { ...p, folders: { ...(p.folders ?? {}), [login]: roots } }); };
-export const prefs = () => ({ roots: [], account: "", everyMin: 3, include: [], exclude: [], ...(shared(KEY_PREFS) ?? {}) });
+export const prefs = () => ({ roots: [], account: "", everyMin: 3, sort: "attention", include: [], exclude: [], ...(shared(KEY_PREFS) ?? {}) });
 
 const git = async (cwd, args, timeout) => {
   const r = await exec("git", args, { cwd, timeout });
