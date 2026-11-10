@@ -5,7 +5,7 @@
 //
 // The same mod is also the click menu: opened as a popup, `props().pr` is set and it draws that.
 import { View, div, svg, image } from "gpui-kit";
-import { HoverCard, Input, InputState, h_flex, v_flex } from "gpui-base";
+import { Popover, Input, InputState, h_flex, v_flex } from "gpui-base";
 import { exec, theme, appHome, props, shared, setShared, openOverlay, closeOverlay, knownAgents, pickFolder } from "herdr";
 import { parseList, summarize } from "./lib/model.js";
 import { KEY_ACTIVE, KEY_PREFS, currentLogin, finishedWorktrees, gh, openPr, prefs, removeWorktree, rootsOf, setRoots } from "./lib/actions.js";
@@ -42,6 +42,10 @@ export default class GithubPrs extends View {
     this.busy = false;
     this.fetchedAt = 0;
     this.panel = "list";   // or "settings"
+    this.open = false;     // is the card showing (we drive a Popover by hand: a HoverCard can't be held open)
+    this.over = { trigger: false, card: false };
+    this.seq = 0;          // bumps on every hover change, so stale timers do nothing
+    this.pinMenu = false;  // the click menu is open: the card stays until something is picked
     // Comma-separated "org" or "org/repo" lists; saved as you type.
     const list = (key) => {
       const st = InputState.new({ placeholder: "acme, acme/widgets", value: prefs()[key].join(", ") });
@@ -53,6 +57,26 @@ export default class GithubPrs extends View {
     this.seenReq = shared(KEY_REQ)?.at ?? 0;
     this.fetch(cx);
     cx.timer.every(60 * 1000, (cx) => { if (Date.now() - this.fetchedAt >= EVERY) this.fetch(cx); });
+  }
+
+  // Card visibility: open after resting on the chip, close shortly after the pointer leaves both
+  // chip and card, but never while the click menu or the settings panel is up.
+  touch(cx) {
+    const seq = ++this.seq;
+    const over = () => this.over.trigger || this.over.card;
+    if (over() && !this.open) {
+      cx.timer.after(OPEN_DELAY, (cx) => { if (seq === this.seq && over()) { this.open = true; cx.notify(); } });
+    } else if (!over() && this.open) {
+      cx.timer.after(CLOSE_DELAY, (cx) => {
+        if (seq === this.seq && !over() && !this.pinMenu && this.panel !== "settings") { this.open = false; cx.notify(); }
+      });
+    }
+  }
+
+  hover(which, on, cx) {
+    this.over[which] = on;
+    if (on && which === "card") this.pinMenu = false; // back on the card after an abandoned menu: normal rules again
+    this.touch(cx);
   }
 
   apply() {
@@ -118,9 +142,11 @@ export default class GithubPrs extends View {
     return h_flex().id("root").size_full().px(12).items_center().justify_end().overflow_hidden()
       .bg(t.chrome).border_color(t.border).text_size(this.top ? 13 : 11.8).text_color(t.muted)
       .when(this.top, (e) => e.border_b(1)).when(!this.top, (e) => e.border_t(1))
-      .child(HoverCard.new("gp-panel").anchor(this.top ? "top_right" : "bottom_right").open_delay(OPEN_DELAY).close_delay(CLOSE_DELAY)
-        .trigger(content)
-        .content(this.panel === "settings" ? this.settings(t) : this.card(t)));
+      .child(Popover.new("gp-panel").anchor(this.top ? "top_right" : "bottom_right")
+        .open(this.open).overlay_closable(!this.pinMenu)
+        .on_open_change((open, cx) => { this.open = open; if (!open) { this.panel = "list"; this.pinMenu = false; } cx.notify(); })
+        .trigger(div().id("gp-trigger").on_hover((on, cx) => this.hover("trigger", on, cx)).child(content))
+        .content((this.panel === "settings" ? this.settings(t) : this.card(t)).on_hover((on, cx) => this.hover("card", on, cx))));
   }
 
   // ---------- hover card ----------
@@ -141,6 +167,7 @@ export default class GithubPrs extends View {
       : { x: Math.round(cardLeft + PANEL_W + 8), y: Math.max(8, Math.round(rowY + rowH - height)) };
     // A click inside the card doesn't dismiss an open popup, so a second click would stack another.
     if (this.menuId) try { closeOverlay(this.menuId); } catch { /* already closed */ }
+    this.pinMenu = true;
     this.menuId = openOverlay({ mod: MOD, kind: "popup", width: MENU_W, height, at, props: { pr: p } });
   }
 
@@ -278,7 +305,7 @@ export default class GithubPrs extends View {
       close();
       setShared(KEY_REQ, { at: Date.now(), pr, agent: agent ? { name: agent.name, run: agent.run } : null });
     };
-    const browser = () => { close(); exec("open", [pr.url]).catch(() => {}); };
+    const browser = () => { close(); setShared(KEY_REQ, { at: Date.now(), pr, browser: true }); };
     return v_flex().min_h(0).w_full().h(menuHeight(agents.length)).bg(t.popover).p(5).text_size(12.8)
       .id("gp-menu").track_focus(this.handle)
       .on_key_down((e) => {
@@ -301,7 +328,10 @@ export default class GithubPrs extends View {
     const req = shared(KEY_REQ);
     if (req && req.at !== this.seenReq) {
       this.seenReq = req.at;
-      openPr(req.pr, req.agent);
+      this.pinMenu = false;
+      this.touch(cx);
+      if (req.browser) exec("open", [req.pr.url]).catch(() => {});
+      else openPr(req.pr, req.agent);
     }
     return this.renderBar();
   }
