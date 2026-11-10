@@ -14,7 +14,7 @@ const MOD = "github-prs";
 const KEY_REQ = `${MOD}.request`;  // the click menu asks the bar (which lives on) to do the work
 const KEY_BEAT = `${MOD}.menu-beat`;
 const KNOWN_AGENTS = "new-menu.agents"; // what Herdr's own new-tab menu last found, per machine ("" = this one)
-const EVERY = 3 * 60 * 1000;   // ms between fetches
+const EVERY_CHOICES = [1, 3, 5, 10, 30]; // minutes between fetches, as offered in settings
 const COOLDOWN = 15 * 1000;    // ms, manual refresh
 const PANEL_W = 440;
 const MENU_W = 260;
@@ -57,7 +57,7 @@ export default class GithubPrs extends View {
     this.excludeInput = list("exclude");
     this.seenReq = shared(KEY_REQ)?.at ?? 0;
     this.fetch(cx);
-    cx.timer.every(60 * 1000, (cx) => { if (Date.now() - this.fetchedAt >= EVERY) this.fetch(cx); });
+    cx.timer.every(60 * 1000, (cx) => { if (Date.now() - this.fetchedAt >= prefs().everyMin * 60 * 1000) this.fetch(cx); });
   }
 
   // Card visibility: open after resting on the chip, close shortly after the pointer leaves both
@@ -263,6 +263,12 @@ export default class GithubPrs extends View {
           .on_click((_e, cx) => this.setAccount(a.id, cx))
           .child(div().w(14).text_color(t.accent).child(prefs().account === a.id ? "●" : ""))
           .child(div().flex_1().min_w(0).truncate().child(a.name)))))
+      .child(div().text_size(11).text_color(t.dim).child("Refresh from GitHub every"))
+      .child(h_flex().gap(4).children(EVERY_CHOICES.map((m) =>
+        div().id(`gp-every-${m}`).px(8).h(24).rounded(5).flex().items_center().cursor_pointer().hover((s) => s.bg(t.hover))
+          .when(prefs().everyMin === m, (e) => e.bg(t.selected).text_color(t.foreground))
+          .on_click((_e, cx) => { setShared(KEY_PREFS, { ...prefs(), everyMin: m }); cx.notify(); })
+          .child(`${m} min`))))
       .child(div().text_size(11).text_color(t.dim).child("Only these orgs or repos (empty = all)"))
       .child(Input.new(this.includeInput))
       .child(div().text_size(11).text_color(t.dim).child("Never show these orgs or repos"))
