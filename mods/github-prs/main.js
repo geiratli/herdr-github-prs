@@ -5,12 +5,13 @@
 //
 // The same mod is also the click menu: opened as a popup, `props().pr` is set and it draws that.
 import { View, div, svg, image } from "gpui-kit";
-import { Popover, Input, InputState, h_flex, v_flex } from "gpui-base";
+import { Avatar, AvatarFallback, AvatarImage, Popover, Input, InputState, h_flex, v_flex } from "gpui-base";
 import { exec, theme, appHome, props, shared, setShared, openOverlay, closeOverlay, knownAgents, pickFolder } from "herdr";
 import { parseList, summarize } from "./lib/model.js";
 import { KEY_ACTIVE, KEY_PREFS, currentLogin, finishedWorktrees, gh, openPr, prefs, removeWorktree, rootsOf, setRoots } from "./lib/actions.js";
 
 const MOD = "github-prs";
+const avatarPath = (login) => `data/${MOD}/avatars/${login}.png`;
 const KEY_REQ = `${MOD}.request`;  // the click menu asks the bar (which lives on) to do the work
 const KEY_BEAT = `${MOD}.menu-beat`;
 const KNOWN_AGENTS = "new-menu.agents"; // what Herdr's own new-tab menu last found, per machine ("" = this one)
@@ -36,6 +37,7 @@ export default class GithubPrs extends View {
     if (props()?.pr) return this.initMenu(cx);
     this.top = props()?.anchor === "top"; // layout prop: the block sits in the top bar, so everything opens downward
     this.reply = null;     // last raw GraphQL reply, so filter edits re-apply without a fetch
+    this.avatars = new Set(); // logins whose avatar file exists
     this.accounts = [];    // gh logins on github.com, active first
     this.data = null;      // { review, mine, other, fix } once a fetch worked
     this.finished = [];    // worktrees we made whose PR is merged or closed
@@ -119,6 +121,7 @@ export default class GithubPrs extends View {
         this.error = null;
         const a = await exec("sh", [`${mod}/accounts.sh`]).catch(() => null);
         if (a?.code === 0) this.accounts = a.stdout.split("\n").map((x) => x.trim()).filter(Boolean);
+        this.loadAvatars(this.accounts, cx);
         if (this.accounts[0] && shared(KEY_ACTIVE) !== this.accounts[0]) setShared(KEY_ACTIVE, this.accounts[0]);
         this.finished = await finishedWorktrees(urls);
       } catch (e) {
@@ -249,44 +252,74 @@ export default class GithubPrs extends View {
     });
   }
 
+  // Avatars are fetched once per login into the app folder (a mod can only draw images from there).
+  loadAvatars(logins, cx) {
+    for (const login of logins) {
+      if (this.avatars.has(login)) continue;
+      exec("sh", ["-c", '[ -s "$2" ] || { mkdir -p "$(dirname "$2")" && curl -fsSL -m 10 -o "$2" "https://github.com/$1.png?size=64"; }', "_", login, `${appHome()}/${avatarPath(login)}`])
+        .then((r) => { if (r.code === 0) { this.avatars.add(login); cx.notify(); } }).catch(() => {});
+    }
+  }
+
+  avatar(login, size, t) {
+    const initials = (login || "?").slice(0, 2).toUpperCase();
+    return Avatar.new().w(size).h(size).flex_none().rounded_full().overflow_hidden().bg(t.raised)
+      .when(this.avatars.has(login), (e) => e.image(AvatarImage.new(avatarPath(login)).size_full()))
+      .fallback(AvatarFallback.new().size_full().flex().items_center().justify_center().text_size(size * 0.4).text_color(t.dim).child(initials));
+  }
+
   settings(t) {
     const roots = rootsOf(currentLogin());
-    return v_flex().id("gp-body").w(PANEL_W).p(10).gap(8).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
+    const label = (text) => div().px(2).pt(4).text_size(10.5).font_semibold().text_color(t.dim).child(text.toUpperCase());
+    const hint = (text) => div().px(2).text_size(11).text_color(t.dim).child(text);
+    const field = (state) => div().px(8).h(28).flex().items_center().rounded(6).border(1).border_color(t.border).bg(t.raised).child(Input.new(state));
+    const chosen = prefs().account;
+    const acct = (id, login, sub, i) =>
+      h_flex().id(`gp-acct-${i}`).gap(8).items_center().px(8).h(36).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+        .when(chosen === id, (e) => e.bg(t.selected))
+        .on_click((_e, cx) => this.setAccount(id, cx))
+        .child(this.avatar(login, 24, t))
+        .child(v_flex().flex_1().min_w(0)
+          .child(div().truncate().text_color(t.foreground).child(login || "—"))
+          .child(div().truncate().text_size(10.5).text_color(t.dim).child(sub)))
+        .child(div().w(14).text_color(t.accent).child(chosen === id ? "✓" : ""));
+    return v_flex().id("gp-body").w(PANEL_W).p(12).gap(8).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
       .text_size(12).text_color(t.foreground)
       .child(h_flex().gap(6).items_center().h(24)
         .child(iconButton("gp-back", "back", "Back", (cx) => { this.panel = "list"; cx.notify(); }, t))
-        .child(div().font_semibold().child("GitHub account")))
-      .child(div().text_size(11).text_color(t.dim)
-        .child("Which gh login to read PRs as. Nothing is switched globally; its token is used only inside the helper's own process."))
-      .child(v_flex().gap(1).children([{ id: "", name: `Active gh account${this.accounts[0] ? ` (${this.accounts[0]})` : ""}` }, ...this.accounts.map((a) => ({ id: a, name: a }))].map((a, i) =>
-        h_flex().id(`gp-acct-${i}`).gap(6).items_center().px(6).h(26).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => this.setAccount(a.id, cx))
-          .child(div().w(14).text_color(t.accent).child(prefs().account === a.id ? "●" : ""))
-          .child(div().flex_1().min_w(0).truncate().child(a.name)))))
-      .child(div().text_size(11).text_color(t.dim).child("Refresh from GitHub every"))
+        .child(div().font_semibold().text_size(13).child("Settings")))
+      .child(label("GitHub account"))
+      .child(v_flex().gap(2)
+        .child(acct("", this.accounts[0] ?? "", "Follow gh's active account", -1))
+        .children(this.accounts.map((a, i) => acct(a, a, "Use this login only", i))))
+      .child(hint("Nothing is switched globally. The login's token lives only inside the helper process."))
+      .child(rule(t))
+      .child(label("Refresh"))
       .child(h_flex().gap(4).children(EVERY_CHOICES.map((m) =>
-        div().id(`gp-every-${m}`).px(8).h(24).rounded(5).flex().items_center().cursor_pointer().hover((s) => s.bg(t.hover))
+        div().id(`gp-every-${m}`).flex_1().h(26).rounded(6).flex().items_center().justify_center().cursor_pointer()
+          .border(1).border_color(prefs().everyMin === m ? t.accent : t.border).hover((s) => s.bg(t.hover))
           .when(prefs().everyMin === m, (e) => e.bg(t.selected).text_color(t.foreground))
           .on_click((_e, cx) => { setShared(KEY_PREFS, { ...prefs(), everyMin: m }); cx.notify(); })
           .child(`${m} min`))))
-      .child(div().text_size(11).text_color(t.dim).child("Only these orgs or repos (empty = all)"))
-      .child(Input.new(this.includeInput))
-      .child(div().text_size(11).text_color(t.dim).child("Never show these orgs or repos"))
-      .child(Input.new(this.excludeInput))
       .child(rule(t))
-      .child(div().font_semibold().child(`Git folders for ${this.login()}`))
-      .child(div().text_size(11).text_color(t.dim)
-        .child("Folders holding your repositories, searched three levels deep for a PR's repo. The folders of your open spaces are always searched too."))
+      .child(label("Filter"))
+      .child(hint("Only these orgs or repos (empty = all)"))
+      .child(field(this.includeInput))
+      .child(hint("Never show these"))
+      .child(field(this.excludeInput))
+      .child(rule(t))
+      .child(label(`Git folders for ${this.login()}`))
+      .child(hint("Searched three levels deep for a PR's repo. Folders of your open spaces are always searched too."))
       .child(v_flex().gap(1).children(roots.map((r, i) =>
-        h_flex().id(`gp-root-${i}`).gap(6).items_center().px(6).h(26).rounded(5).hover((s) => s.bg(t.hover))
+        h_flex().id(`gp-root-${i}`).gap(6).items_center().px(8).h(28).rounded(6).bg(t.raised).hover((s) => s.bg(t.hover))
           .child(div().flex_1().min_w(0).truncate().child(r))
           .child(div().id(`gp-root-x-${i}`).size(20).rounded(4).flex().items_center().justify_center().cursor_pointer().text_color(t.dim)
             .hover((s) => s.bg(t.hover)).tooltip("Remove")
             .on_click((_e, cx) => { setRoots(currentLogin(), roots.filter((x) => x !== r)); cx.notify(); })
             .child("✕")))))
-      .when(roots.length === 0, (e) => e.child(div().px(6).text_size(11).text_color(t.dim).child("None added yet.")))
-      .child(div().id("gp-add").px(6).py(4).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover)).text_color(t.accent)
-        .on_click((_e, cx) => this.addFolder(cx)).child("Add folder…"));
+      .when(roots.length === 0, (e) => e.child(hint("None added yet.")))
+      .child(div().id("gp-add").px(8).h(28).flex().items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover)).text_color(t.accent)
+        .on_click((_e, cx) => this.addFolder(cx)).child("+ Add folder…"));
   }
 
   // ---------- click menu (this mod opened as a popup) ----------
