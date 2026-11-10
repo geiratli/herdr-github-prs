@@ -5,10 +5,10 @@
 //
 // The same mod is also the click menu: opened as a popup, `props().pr` is set and it draws that.
 import { View, div, svg, image } from "gpui-kit";
-import { HoverCard, h_flex, v_flex } from "gpui-base";
+import { HoverCard, Input, InputState, h_flex, v_flex } from "gpui-base";
 import { exec, theme, appHome, props, shared, setShared, openOverlay, closeOverlay, knownAgents, pickFolder } from "herdr";
-import { summarize } from "./lib/model.js";
-import { KEY_PREFS, finishedWorktrees, openPr, prefs, removeWorktree } from "./lib/actions.js";
+import { parseList, summarize } from "./lib/model.js";
+import { KEY_ACTIVE, KEY_PREFS, currentLogin, finishedWorktrees, gh, openPr, prefs, removeWorktree, rootsOf, setRoots } from "./lib/actions.js";
 
 const MOD = "github-prs";
 const KEY_REQ = `${MOD}.request`;  // the click menu asks the bar (which lives on) to do the work
@@ -34,16 +34,46 @@ export default class GithubPrs extends View {
   init(_props, cx) {
     if (props()?.pr) return this.initMenu(cx);
     this.top = props()?.anchor === "top"; // layout prop: the block sits in the top bar, so everything opens downward
+    this.reply = null;     // last raw GraphQL reply, so filter edits re-apply without a fetch
+    this.accounts = [];    // gh logins on github.com, active first
     this.data = null;      // { review, mine, other, fix } once a fetch worked
     this.finished = [];    // worktrees we made whose PR is merged or closed
     this.error = null;     // last failure, shown dim; the old data stays
     this.busy = false;
     this.fetchedAt = 0;
     this.panel = "list";   // or "settings"
+    // Comma-separated "org" or "org/repo" lists; saved as you type.
+    const list = (key) => {
+      const st = InputState.new({ placeholder: "acme, acme/widgets", value: prefs()[key].join(", ") });
+      st.on("change", () => { setShared(KEY_PREFS, { ...prefs(), [key]: parseList(st.value()) }); this.apply(); cx.notify(); });
+      return st;
+    };
+    this.includeInput = list("include");
+    this.excludeInput = list("exclude");
     this.seenReq = shared(KEY_REQ)?.at ?? 0;
     this.fetch(cx);
     cx.timer.every(60 * 1000, (cx) => { if (Date.now() - this.fetchedAt >= EVERY) this.fetch(cx); });
   }
+
+  apply() {
+    if (!this.reply) return;
+    this.data = summarize(this.reply, prefs());
+    const urls = new Set([...this.data.review, ...this.data.mine, ...this.data.other].map((p) => p.url));
+    return urls;
+  }
+
+  setAccount(login, cx) {
+    setShared(KEY_PREFS, { ...prefs(), account: login });
+    this.reply = this.data = null;
+    this.finished = [];
+    this.fetchedAt = 0;
+    this.busy = false;
+    this.fetch(cx);
+    cx.notify();
+  }
+
+  // Who the card is showing: the chosen login, else gh's active one.
+  login() { return prefs().account || this.accounts[0] || "the active gh account"; }
 
   fetch(cx) {
     if (this.busy) return;
@@ -51,11 +81,15 @@ export default class GithubPrs extends View {
     this.fetchedAt = Date.now();
     cx.spawn(async (cx) => {
       try {
-        const r = await exec("sh", [`${appHome()}/mods/${MOD}/helpers/prs.sh`]);
+        const mod = `${appHome()}/mods/${MOD}/helpers`;
+        const r = await exec("sh", [`${mod}/prs.sh`, prefs().account]);
         if (r.code !== 0) throw new Error(r.code === 127 ? "gh not found" : (r.stderr || "gh failed").trim().split("\n")[0]);
-        this.data = summarize(JSON.parse(r.stdout));
+        this.reply = JSON.parse(r.stdout);
+        const urls = this.apply();
         this.error = null;
-        const urls = new Set([...this.data.review, ...this.data.mine, ...this.data.other].map((p) => p.url));
+        const a = await exec("sh", [`${mod}/accounts.sh`]).catch(() => null);
+        if (a?.code === 0) this.accounts = a.stdout.split("\n").map((x) => x.trim()).filter(Boolean);
+        if (this.accounts[0] && shared(KEY_ACTIVE) !== this.accounts[0]) setShared(KEY_ACTIVE, this.accounts[0]);
         this.finished = await finishedWorktrees(urls);
       } catch (e) {
         this.error = String(e?.message ?? e);
@@ -155,6 +189,7 @@ export default class GithubPrs extends View {
       add(this.section("Review requested", d.review, "r", () => [], t), d.review.length);
       add(this.section(`My PRs (${d.fix} to fix)`, d.mine, "m", (p) => p.reasons, t), d.mine.length);
       add(this.section("Also involving me", d.other, "o", () => [], t), d.other.length);
+      if (!d.review.length && !d.mine.length && !d.other.length) parts.unshift(div().px(6).text_color(t.dim).child(`No open PRs for ${this.login()}.`));
       const h = heights.reduce((a, b) => a + b, 0) + (heights.length - 1) * SECTION_GAP;
       body.child(v_flex().id("gp-list").w_full().gap(10).h(Math.min(MAX_LIST_H, h)).overflow_y_scrollbar().children(parts));
     } else {
@@ -163,7 +198,7 @@ export default class GithubPrs extends View {
     return body.child(rule(t))
       .child(h_flex().gap(2).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(11).px(6).text_color(this.error ? (t.ansi1 ?? t.blocked) : t.dim)
-          .child(this.error ?? "Click a PR to open it in a browser, terminal or agent"))
+          .child(this.error ?? `${this.login()} · click a PR to open it`))
         .child(iconButton("gp-refresh", "refresh", cooling ? "Refreshing…" : "Refresh now", (cx) => { this.fetch(cx); cx.notify(); }, t, !cooling))
         .child(iconButton("gp-settings", "gear", "Settings", (cx) => { this.panel = "settings"; cx.notify(); }, t)));
   }
@@ -173,19 +208,32 @@ export default class GithubPrs extends View {
   addFolder(cx) {
     cx.spawn(async (cx) => {
       const folder = await pickFolder({ prompt: "Add" });
-      const p = prefs();
-      if (folder && !p.roots.includes(folder)) setShared(KEY_PREFS, { ...p, roots: [...p.roots, folder] });
+      const roots = rootsOf(currentLogin());
+      if (folder && !roots.includes(folder)) setRoots(currentLogin(), [...roots, folder]);
       cx.notify();
     });
   }
 
   settings(t) {
-    const roots = prefs().roots;
+    const roots = rootsOf(currentLogin());
     return v_flex().id("gp-body").w(PANEL_W).p(10).gap(8).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
       .text_size(12).text_color(t.foreground)
       .child(h_flex().gap(6).items_center().h(24)
         .child(iconButton("gp-back", "back", "Back", (cx) => { this.panel = "list"; cx.notify(); }, t))
-        .child(div().font_semibold().child("Git folders")))
+        .child(div().font_semibold().child("GitHub account")))
+      .child(div().text_size(11).text_color(t.dim)
+        .child("Which gh login to read PRs as. Nothing is switched globally; its token is used only inside the helper's own process."))
+      .child(v_flex().gap(1).children([{ id: "", name: `Active gh account${this.accounts[0] ? ` (${this.accounts[0]})` : ""}` }, ...this.accounts.map((a) => ({ id: a, name: a }))].map((a, i) =>
+        h_flex().id(`gp-acct-${i}`).gap(6).items_center().px(6).h(26).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => this.setAccount(a.id, cx))
+          .child(div().w(14).text_color(t.accent).child(prefs().account === a.id ? "●" : ""))
+          .child(div().flex_1().min_w(0).truncate().child(a.name)))))
+      .child(div().text_size(11).text_color(t.dim).child("Only these orgs or repos (empty = all)"))
+      .child(Input.new(this.includeInput))
+      .child(div().text_size(11).text_color(t.dim).child("Never show these orgs or repos"))
+      .child(Input.new(this.excludeInput))
+      .child(rule(t))
+      .child(div().font_semibold().child(`Git folders for ${this.login()}`))
       .child(div().text_size(11).text_color(t.dim)
         .child("Folders holding your repositories, searched three levels deep for a PR's repo. The folders of your open spaces are always searched too."))
       .child(v_flex().gap(1).children(roots.map((r, i) =>
@@ -193,7 +241,7 @@ export default class GithubPrs extends View {
           .child(div().flex_1().min_w(0).truncate().child(r))
           .child(div().id(`gp-root-x-${i}`).size(20).rounded(4).flex().items_center().justify_center().cursor_pointer().text_color(t.dim)
             .hover((s) => s.bg(t.hover)).tooltip("Remove")
-            .on_click((_e, cx) => { setShared(KEY_PREFS, { ...prefs(), roots: roots.filter((x) => x !== r) }); cx.notify(); })
+            .on_click((_e, cx) => { setRoots(currentLogin(), roots.filter((x) => x !== r)); cx.notify(); })
             .child("✕")))))
       .when(roots.length === 0, (e) => e.child(div().px(6).text_size(11).text_color(t.dim).child("None added yet.")))
       .child(div().id("gp-add").px(6).py(4).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover)).text_color(t.accent)
