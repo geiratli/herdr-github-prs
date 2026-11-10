@@ -17,12 +17,12 @@ const KEY_BEAT = `${MOD}.menu-beat`;
 const KNOWN_AGENTS = "new-menu.agents"; // what Herdr's own new-tab menu last found, per machine ("" = this one)
 const EVERY_CHOICES = [1, 3, 5, 10, 30]; // minutes between fetches, as offered in settings
 const COOLDOWN = 15 * 1000;    // ms, manual refresh
-const PANEL_W = 440;
+const PANEL_W = 600;
 const MENU_W = 260;
 const CARD_INSET = 12;          // card padding (10) + border (1) + row margin (1): row left edge → card left edge
 const menuHeight = (agents) => Math.min(491, 90 + (2 + agents) * 31); // browser + terminal rows, then the agents
-const MAX_LIST_H = 560;        // px; the list scrolls past this (a mod can't read the window height)
-const HEAD_H = 24, ROW_H = 26, SECTION_GAP = 21; // estimates that size the list to its rows
+const MAX_LIST_H = 640;        // px; the list scrolls past this (a mod can't read the window height)
+const HEAD_H = 24, ROW_H = 46, SECTION_GAP = 21; // estimates that size the list to its rows
 const OPEN_DELAY = 350;        // ms, so passing over the bar doesn't flash the card
 const CLOSE_DELAY = 300;       // ms, lets the pointer cross from the bar to the card
 
@@ -188,13 +188,15 @@ export default class GithubPrs extends View {
   prRow(p, i, key, tags, t) {
     return h_flex().id(`gp-${key}-${i}`).gap(8).items_center().px(6).py(4).rounded(5).cursor_pointer()
       .hover((s) => s.bg(t.hover))
-      .tooltip(p.url)
+      .tooltip(p.title)
       .on_mouse_down("left", (e) => this.pick(e, p))
       .child(div().size(7).flex_none().rounded_full().bg(ciColor(p.ci, t)).tooltip(p.ci ? `CI: ${p.ci.toLowerCase()}` : "No CI"))
-      .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(p.title))
-      .child(div().flex_none().text_size(11).text_color(t.dim).child(`${p.repo.split("/").pop()}#${p.number}`))
-      .children(tags.map((g) => pill(g, t.ansi1 ?? t.blocked, t)))
-      .when(p.draft, (e) => e.child(pill("draft", t.dim, t)));
+      .child(v_flex().flex_1().min_w(0).gap(2)
+        .child(div().truncate().text_color(t.foreground).child(p.title))
+        .child(h_flex().gap(6).items_center()
+          .child(div().flex_none().text_size(11).text_color(t.dim).child(`${p.repo.split("/").pop()}#${p.number}`))
+          .children(tags.map((g) => pill(g, t.ansi1 ?? t.blocked, t)))
+          .when(p.draft, (e) => e.child(pill("draft", t.dim, t)))));
   }
 
   section(title, list, key, tagsOf, t, extra = null) {
