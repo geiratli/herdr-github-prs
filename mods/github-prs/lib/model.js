@@ -11,8 +11,13 @@ const flat = (n) => ({
   ci: n.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state ?? null,
 });
 
-export function summarize(reply) {
-  const nodes = (k) => (reply?.data?.[k]?.nodes ?? []).filter((n) => n && n.number).map(flat);
+// "org" or "org/repo", case-insensitive. No include list = every repo; exclude always wins.
+const matches = (list, repo) => list.some((x) => { const r = repo.toLowerCase(), e = x.toLowerCase(); return r === e || r.startsWith(e + "/"); });
+export const allowed = (repo, { include = [], exclude = [] } = {}) => (!include.length || matches(include, repo)) && !matches(exclude, repo);
+export const parseList = (text) => (text ?? "").split(/[\s,]+/).filter(Boolean);
+
+export function summarize(reply, filter) {
+  const nodes = (k) => (reply?.data?.[k]?.nodes ?? []).filter((n) => n && n.number).map(flat).filter((p) => allowed(p.repo, filter));
   // Drafts you're asked to review aren't ready for you yet.
   const review = nodes("review").filter((p) => !p.draft);
   // All my own PRs, the ones needing action first (sort is stable: recency kept within each).

@@ -5,18 +5,25 @@ import { branchFor, parseWorktrees, spaceFor, worktreePath } from "./repo.js";
 const MOD = "github-prs";
 export const KEY_PREFS = `${MOD}.prefs`;
 export const KEY_WORKTREES = `${MOD}.worktrees`; // path → { slug, number, url, label }: the ones this mod made
-export const prefs = () => ({ roots: [], ...(shared(KEY_PREFS) ?? {}) });
+export const KEY_ACTIVE = `${MOD}.active`; // gh's active login, written by the bar, for when no account is chosen
+export const currentLogin = () => prefs().account || shared(KEY_ACTIVE) || "";
+// Git folders belong to a gh account. Before any per-account setting, the old single `roots` list applies to all.
+export const rootsOf = (login) => prefs().folders?.[login] ?? (prefs().folders ? [] : prefs().roots);
+export const setRoots = (login, roots) => { const { roots: _old, ...p } = prefs(); setShared(KEY_PREFS, { ...p, folders: { ...(p.folders ?? {}), [login]: roots } }); };
+export const prefs = () => ({ roots: [], account: "", everyMin: 3, include: [], exclude: [], ...(shared(KEY_PREFS) ?? {}) });
 
 const git = async (cwd, args, timeout) => {
   const r = await exec("git", args, { cwd, timeout });
   return { ok: r.code === 0, out: (r.stdout ?? "").trim(), err: (r.stderr || r.stdout || "").trim() };
 };
+// Every gh call goes through gh.sh as the chosen account ("" = active): the token stays in that child's env.
+export const gh = (args, options) => exec("sh", [`${appHome()}/mods/${MOD}/helpers/gh.sh`, prefs().account, ...args], options);
 const fail = (title, body) => notify({ title, body: String(body).slice(0, 400), level: "error", timeout: 20000 });
 
 // The main checkout of a repo: a folder an open space is in, else under a configured git folder.
 async function locate(slug) {
   const open = [...spaces().filter((s) => !s.machine).map((s) => s.folder), ...panes().map((p) => p.cwd)].filter(Boolean);
-  const args = [...new Set(open)].map((d) => `d:${d}`).concat(prefs().roots.map((r) => `r:${r}`));
+  const args = [...new Set(open)].map((d) => `d:${d}`).concat(rootsOf(currentLogin()).map((r) => `r:${r}`));
   const r = await exec("sh", [`${appHome()}/mods/${MOD}/helpers/locate.sh`, slug, ...args], { timeout: 60000 });
   return r.code === 0 ? r.stdout.split("\n")[0].trim() : null;
 }
@@ -44,7 +51,7 @@ export async function openPr(pr, agent) {
         const add = await git(main, ["worktree", "add", "--detach", path], 600_000);
         if (!add.ok) return fail(`Can't check out ${label}`, add.err);
       }
-      const co = await exec("gh", ["pr", "checkout", String(pr.number), "-R", pr.repo, ...(pr.cross ? ["-b", branch] : [])], { cwd: path, timeout: 600_000 });
+      const co = await gh(["pr", "checkout", String(pr.number), "-R", pr.repo, ...(pr.cross ? ["-b", branch] : [])], { cwd: path, timeout: 600_000 });
       if (co.code !== 0) {
         await git(main, ["worktree", "remove", "--force", path]); // ours, nothing of the person's in it
         return fail(`Can't check out ${label}`, co.stderr || co.stdout);
@@ -54,6 +61,9 @@ export async function openPr(pr, agent) {
       run("space.new", { folder: path, ...start(agent) });
       return;
     }
+    // Already running that agent in this checkout? Show it instead of starting a second one.
+    const running = agent?.key && panes().find((p) => p.terminal && p.program?.key === agent.key && p.cwd && (p.cwd === at.path || p.cwd.startsWith(at.path + "/")));
+    if (running) return run("agent.focus", { terminal: running.terminal });
     const space = spaceFor(at.path, wts.map((w) => w.path), spaces(), panes());
     if (space) run("tab.new", { space: space.id, folder: at.path, ...(agent ? { name: agent.name } : {}), ...start(agent) });
     else run("space.new", { folder: at.path, ...start(agent) });
@@ -73,7 +83,7 @@ export async function finishedWorktrees(openUrls) {
       if ((await exec("sh", ["-c", '[ -d "$1" ]', "_", path])).code !== 0) continue;
       keep[path] = w;
       if (openUrls.has(w.url)) continue;
-      const r = await exec("gh", ["pr", "view", String(w.number), "-R", w.slug, "--json", "state", "-q", ".state"]);
+      const r = await gh(["pr", "view", String(w.number), "-R", w.slug, "--json", "state", "-q", ".state"]);
       const state = r.stdout.trim();
       if (r.code === 0 && (state === "MERGED" || state === "CLOSED")) done.push({ path, ...w, state });
     } catch { keep[path] = w; } // couldn't ask: try again next time
