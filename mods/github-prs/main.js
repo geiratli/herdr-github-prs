@@ -1,0 +1,260 @@
+// GitHub PRs: what needs your attention, in the status bar; a hover card with every PR involving
+// you. Click a PR to open it in a browser, a terminal or a coding agent, in the folder where its
+// branch is checked out (a worktree is made when there's none). Worktrees of finished PRs are
+// offered for cleanup. Data comes from helpers/prs.sh (your own `gh` login); no token is read here.
+//
+// The same mod is also the click menu: opened as a popup, `props().pr` is set and it draws that.
+import { View, div, svg, image } from "gpui-kit";
+import { HoverCard, h_flex, v_flex } from "gpui-base";
+import { exec, theme, appHome, props, shared, setShared, openOverlay, closeOverlay, knownAgents, pickFolder } from "herdr";
+import { summarize } from "./lib/model.js";
+import { KEY_PREFS, finishedWorktrees, openPr, prefs, removeWorktree } from "./lib/actions.js";
+
+const MOD = "github-prs";
+const KEY_REQ = `${MOD}.request`;  // the click menu asks the bar (which lives on) to do the work
+const KNOWN_AGENTS = "new-menu.agents"; // what Herdr's own new-tab menu last found, per machine ("" = this one)
+const EVERY = 3 * 60 * 1000;   // ms between fetches
+const COOLDOWN = 15 * 1000;    // ms, manual refresh
+const PANEL_W = 440;
+const MENU_W = 260;
+const CARD_INSET = 12;          // card padding (10) + border (1) + row margin (1): row left edge → card left edge
+const menuHeight = (agents) => Math.min(491, 90 + (2 + agents) * 31); // browser + terminal rows, then the agents
+const MAX_LIST_H = 560;        // px; the list scrolls past this (a mod can't read the window height)
+const HEAD_H = 18, ROW_H = 26, SECTION_GAP = 21; // estimates that size the list to its rows
+const OPEN_DELAY = 350;        // ms, so passing over the bar doesn't flash the card
+const CLOSE_DELAY = 300;       // ms, lets the pointer cross from the bar to the card
+
+const rule = (t) => div().h(1).bg(t.border).flex_none();
+const iconButton = (id, icon, label, onClick, t, enabled = true) =>
+  div().id(id).size(24).rounded(5).flex().items_center().justify_center().tooltip(label)
+    .when(enabled, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => onClick(cx)))
+    .child(svg(`mods/${MOD}/icons/${icon}.svg`).size(14).text_color(enabled ? t.muted : t.dim));
+
+export default class GithubPrs extends View {
+  init(_props, cx) {
+    if (props()?.pr) return this.initMenu(cx);
+    this.top = props()?.anchor === "top"; // layout prop: the block sits in the top bar, so everything opens downward
+    this.data = null;      // { review, mine, other, fix } once a fetch worked
+    this.finished = [];    // worktrees we made whose PR is merged or closed
+    this.error = null;     // last failure, shown dim; the old data stays
+    this.busy = false;
+    this.fetchedAt = 0;
+    this.panel = "list";   // or "settings"
+    this.seenReq = shared(KEY_REQ)?.at ?? 0;
+    this.fetch(cx);
+    cx.timer.every(60 * 1000, (cx) => { if (Date.now() - this.fetchedAt >= EVERY) this.fetch(cx); });
+  }
+
+  fetch(cx) {
+    if (this.busy) return;
+    this.busy = true;
+    this.fetchedAt = Date.now();
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec("sh", [`${appHome()}/mods/${MOD}/helpers/prs.sh`]);
+        if (r.code !== 0) throw new Error(r.code === 127 ? "gh not found" : (r.stderr || "gh failed").trim().split("\n")[0]);
+        this.data = summarize(JSON.parse(r.stdout));
+        this.error = null;
+        const urls = new Set([...this.data.review, ...this.data.mine, ...this.data.other].map((p) => p.url));
+        this.finished = await finishedWorktrees(urls);
+      } catch (e) {
+        this.error = String(e?.message ?? e);
+      }
+      this.busy = false;
+      cx.notify();
+    });
+  }
+
+  // ---------- status bar ----------
+
+  renderBar() {
+    const t = theme();
+    const d = this.data;
+    const stat = (label, n, color) =>
+      h_flex().gap(5).flex_none().whitespace_nowrap()
+        .child(div().text_color(n ? color : t.dim).child(d ? String(n) : "—"))
+        .child(div().text_size(this.top ? 12 : 10.5).text_color(t.dim).child(label));
+    const content = h_flex().id("gp-content").gap(14).items_center().flex_none()
+      .child(svg(`mods/${MOD}/icons/github.svg`).size(this.top ? 16 : 14).text_color(t.muted))
+      .child(stat("review", d?.review.length ?? 0, t.ansi3 ?? t.done))
+      .child(stat("to fix", d?.fix ?? 0, t.ansi1 ?? t.blocked))
+      .child(stat("other", d?.other.length ?? 0, t.foreground))
+      .when(this.finished.length > 0, (e) => e.child(stat("to clean", this.finished.length, t.ansi3 ?? t.done)))
+      .when(this.error != null, (e) => e.child(div().text_color(t.ansi1 ?? t.blocked).child("!")));
+    return h_flex().id("root").size_full().px(12).items_center().justify_end().overflow_hidden()
+      .bg(t.chrome).border_color(t.border).text_size(this.top ? 13 : 11.8).text_color(t.muted)
+      .when(this.top, (e) => e.border_b(1)).when(!this.top, (e) => e.border_t(1))
+      .child(HoverCard.new("gp-panel").anchor(this.top ? "top_right" : "bottom_right").open_delay(OPEN_DELAY).close_delay(CLOSE_DELAY)
+        .trigger(content)
+        .content(this.panel === "settings" ? this.settings(t) : this.card(t)));
+  }
+
+  // ---------- hover card ----------
+
+  // Press: the menu (browser / terminal / agents), beside the card, never over it: the card is drawn
+  // above popups, and the default "pointer" spot isn't tracked inside a hover card.
+  // Bottom bar: right of the card, its bottom on the clicked row's, growing upward (no room below).
+  // Top bar: the block is at the window's right edge, so left of the card, its top on the row's, growing down.
+  pick(e, p) {
+    const cached = shared(KNOWN_AGENTS)?.[""] ?? [];
+    const height = menuHeight(cached.filter((a) => a.installed).length);
+    const rowX = e.position.x - (e.local_position?.x ?? 0);
+    const rowY = e.position.y - (e.local_position?.y ?? 0);
+    const rowH = e.bounds?.height ?? 28;
+    const cardLeft = rowX - CARD_INSET; // rows start CARD_INSET inside the card's left edge
+    const at = this.top
+      ? { x: Math.max(8, Math.round(cardLeft - MENU_W - 8)), y: Math.round(rowY) }
+      : { x: Math.round(cardLeft + PANEL_W + 8), y: Math.max(8, Math.round(rowY + rowH - height)) };
+    // A click inside the card doesn't dismiss an open popup, so a second click would stack another.
+    if (this.menuId) try { closeOverlay(this.menuId); } catch { /* already closed */ }
+    this.menuId = openOverlay({ mod: MOD, kind: "popup", width: MENU_W, height, at, props: { pr: p } });
+  }
+
+  prRow(p, i, key, tags, t) {
+    return h_flex().id(`gp-${key}-${i}`).gap(8).items_center().px(6).py(4).rounded(5).cursor_pointer()
+      .hover((s) => s.bg(t.hover))
+      .tooltip(p.url)
+      .on_mouse_down("left", (e) => this.pick(e, p))
+      .child(div().flex_none().text_size(11).text_color(t.dim).child(`${p.repo.split("/").pop()}#${p.number}`))
+      .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(p.title))
+      .children(tags.map((g) => div().flex_none().px(5).rounded(4).bg(t.raised).text_size(10).text_color(t.ansi1 ?? t.blocked).child(g)));
+  }
+
+  section(title, list, key, tagsOf, t) {
+    return v_flex().gap(2)
+      .child(div().px(6).font_semibold().child(`${title} · ${list.length}`))
+      .children(list.length
+        ? list.map((p, i) => this.prRow(p, i, key, tagsOf(p), t))
+        : [div().px(6).text_size(11).text_color(t.dim).child("Nothing waiting")]);
+  }
+
+  // Worktrees this mod made, their PR now merged or closed: a click opens Herdr's own remove dialog.
+  cleanSection(t) {
+    return v_flex().gap(2)
+      .child(div().px(6).font_semibold().child(`Worktrees to clean up · ${this.finished.length}`))
+      .children(this.finished.map((w, i) =>
+        h_flex().id(`gp-clean-${i}`).gap(8).items_center().px(6).py(4).rounded(5).cursor_pointer()
+          .hover((s) => s.bg(t.hover)).tooltip(`Remove ${w.path}`)
+          .on_click(() => removeWorktree(w))
+          .child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim).flex_none())
+          .child(div().flex_none().text_size(11).text_color(t.dim).child(w.label))
+          .child(div().flex_1())
+          .child(div().flex_none().px(5).rounded(4).bg(t.raised).text_size(10).text_color(t.ansi3 ?? t.done).child(w.state.toLowerCase()))));
+  }
+
+  card(t) {
+    const d = this.data;
+    const cooling = Date.now() - this.fetchedAt < COOLDOWN;
+    const body = v_flex().id("gp-body").w(PANEL_W).p(10).gap(10).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
+      .text_size(12).text_color(t.foreground);
+    if (d) {
+      const parts = [];
+      const heights = [];
+      const add = (node, n) => { if (parts.length) parts.push(rule(t)); parts.push(node); heights.push(HEAD_H + Math.max(1, n) * ROW_H); };
+      if (this.finished.length) add(this.cleanSection(t), this.finished.length);
+      add(this.section("Review requested", d.review, "r", () => [], t), d.review.length);
+      add(this.section(`My PRs (${d.fix} to fix)`, d.mine, "m", (p) => p.reasons, t), d.mine.length);
+      add(this.section("Also involving me", d.other, "o", () => [], t), d.other.length);
+      const h = heights.reduce((a, b) => a + b, 0) + (heights.length - 1) * SECTION_GAP;
+      body.child(v_flex().id("gp-list").w_full().gap(10).h(Math.min(MAX_LIST_H, h)).overflow_y_scrollbar().children(parts));
+    } else {
+      body.child(div().text_color(t.dim).child(this.error ?? "Loading…"));
+    }
+    return body.child(rule(t))
+      .child(h_flex().gap(2).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(11).px(6).text_color(this.error ? (t.ansi1 ?? t.blocked) : t.dim)
+          .child(this.error ?? "Click a PR to open it in a browser, terminal or agent"))
+        .child(iconButton("gp-refresh", "refresh", cooling ? "Refreshing…" : "Refresh now", (cx) => { this.fetch(cx); cx.notify(); }, t, !cooling))
+        .child(iconButton("gp-settings", "gear", "Settings", (cx) => { this.panel = "settings"; cx.notify(); }, t)));
+  }
+
+  // ---------- settings: where your repos live ----------
+
+  addFolder(cx) {
+    cx.spawn(async (cx) => {
+      const folder = await pickFolder({ prompt: "Add" });
+      const p = prefs();
+      if (folder && !p.roots.includes(folder)) setShared(KEY_PREFS, { ...p, roots: [...p.roots, folder] });
+      cx.notify();
+    });
+  }
+
+  settings(t) {
+    const roots = prefs().roots;
+    return v_flex().id("gp-body").w(PANEL_W).p(10).gap(8).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
+      .text_size(12).text_color(t.foreground)
+      .child(h_flex().gap(6).items_center().h(24)
+        .child(iconButton("gp-back", "back", "Back", (cx) => { this.panel = "list"; cx.notify(); }, t))
+        .child(div().font_semibold().child("Git folders")))
+      .child(div().text_size(11).text_color(t.dim)
+        .child("Folders holding your repositories, searched three levels deep for a PR's repo. The folders of your open spaces are always searched too."))
+      .child(v_flex().gap(1).children(roots.map((r, i) =>
+        h_flex().id(`gp-root-${i}`).gap(6).items_center().px(6).h(26).rounded(5).hover((s) => s.bg(t.hover))
+          .child(div().flex_1().min_w(0).truncate().child(r))
+          .child(div().id(`gp-root-x-${i}`).size(20).rounded(4).flex().items_center().justify_center().cursor_pointer().text_color(t.dim)
+            .hover((s) => s.bg(t.hover)).tooltip("Remove")
+            .on_click((_e, cx) => { setShared(KEY_PREFS, { ...prefs(), roots: roots.filter((x) => x !== r) }); cx.notify(); })
+            .child("✕")))))
+      .when(roots.length === 0, (e) => e.child(div().px(6).text_size(11).text_color(t.dim).child("None added yet.")))
+      .child(div().id("gp-add").px(6).py(4).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover)).text_color(t.accent)
+        .on_click((_e, cx) => this.addFolder(cx)).child("Add folder…"));
+  }
+
+  // ---------- click menu (this mod opened as a popup) ----------
+
+  initMenu(cx) {
+    this.menu = true;
+    this.agents = shared(KNOWN_AGENTS)?.[""] ?? []; // Herdr's last list, shown at once
+    this.handle = cx.focus_handle();
+    this.handle.focus();
+    cx.spawn(async (cx) => {
+      try { this.agents = await knownAgents(); } catch { /* keep the cached list */ }
+      cx.notify();
+    });
+  }
+
+  menuRow(id, icon, name, hint, onPick, t) {
+    return h_flex().id(id).h(31).px(9).gap(10).rounded(7).items_center().flex_none()
+      .text_color(t.foreground).hover((s) => s.bg(t.selected)).cursor_pointer()
+      .on_click(() => onPick())
+      .child(icon).child(div().flex_1().child(name)).child(div().text_size(11).text_color(t.dim).child(hint));
+  }
+
+  renderMenu() {
+    const t = theme();
+    const pr = props().pr;
+    const agents = this.agents.filter((a) => a.installed);
+    const close = () => closeOverlay(props().overlay);
+    // The bar (always running) does the work, so closing this popup can't cut a checkout short.
+    const open = (agent) => {
+      close();
+      setShared(KEY_REQ, { at: Date.now(), pr, agent: agent ? { name: agent.name, run: agent.run } : null });
+    };
+    const browser = () => { close(); exec("open", [pr.url]).catch(() => {}); };
+    return v_flex().min_h(0).w_full().h(menuHeight(agents.length)).bg(t.popover).p(5).text_size(12.8)
+      .id("gp-menu").track_focus(this.handle)
+      .on_key_down((e) => {
+        if (e.modifiers.control || e.modifiers.platform || e.modifiers.alt) return;
+        if (e.key === "b") return browser();
+        if (e.key === "t") return open(null);
+        const agent = /^[1-9]$/.test(e.key) ? agents[Number(e.key) - 1] : null;
+        if (agent) open(agent);
+      })
+      .child(div().px(9).pt(6).pb(4).text_size(11).text_color(t.dim).truncate().child(`${pr.repo.split("/").pop()}#${pr.number} · ${pr.title}`))
+      .child(this.menuRow("gp-browser", svg(`mods/${MOD}/icons/github.svg`).size(14), "Open in browser", "b", browser, t))
+      .child(this.menuRow("gp-terminal", svg("icons/shell.svg").size(14), "Terminal in checkout", "t", () => open(null), t))
+      .child(div().px(9).pt(8).pb(4).text_size(11).text_color(t.dim).child("Start an agent in the checkout"))
+      .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar()
+        .children(agents.map((a, i) => this.menuRow(`gp-${a.key}`, a.tint ? svg(a.icon).size(14).text_color(t.foreground) : image(a.icon).size(14), a.name, i < 9 ? String(i + 1) : "", () => open(a), t))));
+  }
+
+  render(cx) {
+    if (this.menu) return this.renderMenu();
+    const req = shared(KEY_REQ);
+    if (req && req.at !== this.seenReq) {
+      this.seenReq = req.at;
+      openPr(req.pr, req.agent);
+    }
+    return this.renderBar();
+  }
+}
