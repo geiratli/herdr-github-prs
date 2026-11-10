@@ -70,6 +70,9 @@ Community mod managers flag mods that run programs, so, plainly:
 
 Local machine only (not remote spaces), `.git` scan depth 3, at most 100 PRs per group, macOS first, github.com only.
 
+**Fork PRs are untested.** The code names their local branch `pr-<number>` and checks them out with
+`gh pr checkout -b`, but this has never been run against a real fork PR. Reports welcome.
+
 ## Development
 
 `lib/*.test.js` are plain assert scripts for the pure code (`model`, `repo`). `herdr-app check mods/github-prs`
