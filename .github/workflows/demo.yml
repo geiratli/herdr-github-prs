@@ -1,0 +1,7 @@
+name: demo
+on: pull_request
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 0
