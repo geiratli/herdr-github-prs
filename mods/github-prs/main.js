@@ -12,6 +12,7 @@ import { KEY_ACTIVE, KEY_PREFS, currentLogin, finishedWorktrees, gh, openPr, pre
 
 const MOD = "github-prs";
 const KEY_REQ = `${MOD}.request`;  // the click menu asks the bar (which lives on) to do the work
+const KEY_BEAT = `${MOD}.menu-beat`;
 const KNOWN_AGENTS = "new-menu.agents"; // what Herdr's own new-tab menu last found, per machine ("" = this one)
 const EVERY = 3 * 60 * 1000;   // ms between fetches
 const COOLDOWN = 15 * 1000;    // ms, manual refresh
@@ -67,15 +68,20 @@ export default class GithubPrs extends View {
     if (over() && !this.open) {
       cx.timer.after(OPEN_DELAY, (cx) => { if (seq === this.seq && over()) { this.open = true; cx.notify(); } });
     } else if (!over() && this.open) {
-      cx.timer.after(CLOSE_DELAY, (cx) => {
-        if (seq === this.seq && !over() && !this.pinMenu && this.panel !== "settings") { this.open = false; cx.notify(); }
-      });
+      const tryClose = (cx) => {
+        if (seq !== this.seq || over()) return;
+        if (this.menuUp() || this.panel === "settings") return cx.timer.after(600, tryClose); // look again later
+        this.open = false; cx.notify();
+      };
+      cx.timer.after(CLOSE_DELAY, tryClose);
     }
   }
 
+  // The click menu beats on a shared key while it lives; no beat for 1.5 s = it's gone (picked or dismissed).
+  menuUp() { return this.pinMenu && Date.now() - (shared(KEY_BEAT) ?? 0) < 1500; }
+
   hover(which, on, cx) {
     this.over[which] = on;
-    if (on && which === "card") this.pinMenu = false; // back on the card after an abandoned menu: normal rules again
     this.touch(cx);
   }
 
@@ -143,8 +149,9 @@ export default class GithubPrs extends View {
       .bg(t.chrome).border_color(t.border).text_size(this.top ? 13 : 11.8).text_color(t.muted)
       .when(this.top, (e) => e.border_b(1)).when(!this.top, (e) => e.border_t(1))
       .child(Popover.new("gp-panel").anchor(this.top ? "top_right" : "bottom_right")
-        .open(this.open).overlay_closable(!this.pinMenu)
-        .on_open_change((open, cx) => { this.open = open; if (!open) { this.panel = "list"; this.pinMenu = false; } cx.notify(); })
+        .open(this.open).overlay_closable(!this.menuUp())
+        .on_open_change((open, cx) => { if (!open && this.menuUp()) return; // a press in the click menu is "outside" to the card
+          this.open = open; if (!open) this.panel = "list"; cx.notify(); })
         .trigger(div().id("gp-trigger").on_hover((on, cx) => this.hover("trigger", on, cx)).child(content))
         .content((this.panel === "settings" ? this.settings(t) : this.card(t)).on_hover((on, cx) => this.hover("card", on, cx))));
   }
@@ -168,6 +175,7 @@ export default class GithubPrs extends View {
     // A click inside the card doesn't dismiss an open popup, so a second click would stack another.
     if (this.menuId) try { closeOverlay(this.menuId); } catch { /* already closed */ }
     this.pinMenu = true;
+    setShared(KEY_BEAT, Date.now());
     this.menuId = openOverlay({ mod: MOD, kind: "popup", width: MENU_W, height, at, props: { pr: p } });
   }
 
@@ -280,6 +288,7 @@ export default class GithubPrs extends View {
   initMenu(cx) {
     this.menu = true;
     this.agents = shared(KNOWN_AGENTS)?.[""] ?? []; // Herdr's last list, shown at once
+    cx.timer.every(500, () => setShared(KEY_BEAT, Date.now()));
     this.handle = cx.focus_handle();
     this.handle.focus();
     cx.spawn(async (cx) => {
