@@ -22,6 +22,8 @@ in a git worktree made for its branch.
 
 ## Install
 
+Short version below; [RECIPE.md](RECIPE.md) has the same steps plus first-run setup.
+
 Tell your agent: *"Read ~/.config/herdr-app/AGENTS.md, then add the mod at https://github.com/geiratli/herdr-github-prs"*,
 or by hand:
 
