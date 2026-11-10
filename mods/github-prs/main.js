@@ -143,7 +143,7 @@ export default class GithubPrs extends View {
       h_flex().gap(5).flex_none().whitespace_nowrap()
         .child(div().text_color(n ? color : t.dim).child(d ? String(n) : "—"))
         .child(div().text_size(this.top ? 12 : 10.5).text_color(t.dim).child(label));
-    const content = h_flex().id("gp-content").gap(14).items_center().flex_none()
+    const content = h_flex().id("gp-content").gap(10).items_center().flex_none()
       .child(svg(`mods/${MOD}/icons/github.svg`).size(this.top ? 16 : 14).text_color(t.muted))
       .child(stat("review", d?.review.length ?? 0, t.ansi3 ?? t.done))
       .child(stat("mine", d?.mine.length ?? 0, t.foreground))

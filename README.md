@@ -36,11 +36,11 @@ herdr-app check ~/.config/herdr-app/mods/github-prs
 Then add a block to a layout in `~/.config/herdr-app/layouts/`:
 
 ```json
-{ "content": { "mod": "github-prs", "props": { "anchor": "top" } }, "size": { "px": 290 } }
+{ "content": { "mod": "github-prs", "props": { "anchor": "top" } }, "size": { "px": 340 } }
 ```
 
 Put it in a top row (next to the tabs). `anchor: "top"` makes the card open downward; leave it out for a bottom
-status row, where the card opens upward. The chip is about 290 px wide with all five counts.
+status row, where the card opens upward. The chip is about 330 px wide with all five counts.
 
 ## Settings (⚙ in the card)
 

@@ -20,7 +20,7 @@ herdr-app check ~/.config/herdr-app/mods/github-prs
 Add this block to a layout in `~/.config/herdr-app/layouts/`, in a top row next to the tabs:
 
 ```json
-{ "content": { "mod": "github-prs", "props": { "anchor": "top" } }, "size": { "px": 290 } }
+{ "content": { "mod": "github-prs", "props": { "anchor": "top" } }, "size": { "px": 340 } }
 ```
 
 Leave out `"anchor": "top"` for a bottom status row (the card then opens upward).
