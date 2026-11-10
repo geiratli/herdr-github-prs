@@ -146,6 +146,7 @@ export default class GithubPrs extends View {
     const content = h_flex().id("gp-content").gap(14).items_center().flex_none()
       .child(svg(`mods/${MOD}/icons/github.svg`).size(this.top ? 16 : 14).text_color(t.muted))
       .child(stat("review", d?.review.length ?? 0, t.ansi3 ?? t.done))
+      .child(stat("mine", d?.mine.length ?? 0, t.foreground))
       .child(stat("to fix", d?.fix ?? 0, t.ansi1 ?? t.blocked))
       .child(stat("other", d?.other.length ?? 0, t.foreground))
       .when(this.finished.length > 0, (e) => e.child(stat("to clean", this.finished.length, t.ansi3 ?? t.done)))
