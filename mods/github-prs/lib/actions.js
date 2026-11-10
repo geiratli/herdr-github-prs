@@ -61,6 +61,9 @@ export async function openPr(pr, agent) {
       run("space.new", { folder: path, ...start(agent) });
       return;
     }
+    // Already running that agent in this checkout? Show it instead of starting a second one.
+    const running = agent?.key && panes().find((p) => p.terminal && p.program?.key === agent.key && p.cwd && (p.cwd === at.path || p.cwd.startsWith(at.path + "/")));
+    if (running) return run("agent.focus", { terminal: running.terminal });
     const space = spaceFor(at.path, wts.map((w) => w.path), spaces(), panes());
     if (space) run("tab.new", { space: space.id, folder: at.path, ...(agent ? { name: agent.name } : {}), ...start(agent) });
     else run("space.new", { folder: at.path, ...start(agent) });

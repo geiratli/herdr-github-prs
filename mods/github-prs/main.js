@@ -362,7 +362,7 @@ export default class GithubPrs extends View {
     // The bar (always running) does the work, so closing this popup can't cut a checkout short.
     const open = (agent) => {
       close();
-      setShared(KEY_REQ, { at: Date.now(), pr, agent: agent ? { name: agent.name, run: agent.run } : null });
+      setShared(KEY_REQ, { at: Date.now(), pr, agent: agent ? { name: agent.name, run: agent.run, key: agent.key } : null });
     };
     const browser = () => { close(); setShared(KEY_REQ, { at: Date.now(), pr, browser: true }); };
     return v_flex().min_h(0).w_full().h(menuHeight(agents.length)).bg(t.popover).p(5).text_size(12.8)
