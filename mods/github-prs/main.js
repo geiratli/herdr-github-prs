@@ -22,10 +22,12 @@ const MENU_W = 260;
 const CARD_INSET = 12;          // card padding (10) + border (1) + row margin (1): row left edge → card left edge
 const menuHeight = (agents) => Math.min(491, 90 + (2 + agents) * 31); // browser + terminal rows, then the agents
 const MAX_LIST_H = 560;        // px; the list scrolls past this (a mod can't read the window height)
-const HEAD_H = 18, ROW_H = 26, SECTION_GAP = 21; // estimates that size the list to its rows
+const HEAD_H = 24, ROW_H = 26, SECTION_GAP = 21; // estimates that size the list to its rows
 const OPEN_DELAY = 350;        // ms, so passing over the bar doesn't flash the card
 const CLOSE_DELAY = 300;       // ms, lets the pointer cross from the bar to the card
 
+const pill = (text, color, t) => div().flex_none().px(6).h(16).flex().items_center().rounded(8).bg(t.raised).text_size(10).text_color(color).child(text);
+const ciColor = (ci, t) => ({ SUCCESS: t.ansi2 ?? t.done, FAILURE: t.ansi1 ?? t.blocked, ERROR: t.ansi1 ?? t.blocked, PENDING: t.ansi3 ?? t.done, EXPECTED: t.ansi3 ?? t.done })[ci] ?? t.border;
 const rule = (t) => div().h(1).bg(t.border).flex_none();
 const iconButton = (id, icon, label, onClick, t, enabled = true) =>
   div().id(id).size(24).rounded(5).flex().items_center().justify_center().tooltip(label)
@@ -187,14 +189,19 @@ export default class GithubPrs extends View {
       .hover((s) => s.bg(t.hover))
       .tooltip(p.url)
       .on_mouse_down("left", (e) => this.pick(e, p))
-      .child(div().flex_none().text_size(11).text_color(t.dim).child(`${p.repo.split("/").pop()}#${p.number}`))
+      .child(div().size(7).flex_none().rounded_full().bg(ciColor(p.ci, t)).tooltip(p.ci ? `CI: ${p.ci.toLowerCase()}` : "No CI"))
       .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(p.title))
-      .children(tags.map((g) => div().flex_none().px(5).rounded(4).bg(t.raised).text_size(10).text_color(t.ansi1 ?? t.blocked).child(g)));
+      .child(div().flex_none().text_size(11).text_color(t.dim).child(`${p.repo.split("/").pop()}#${p.number}`))
+      .children(tags.map((g) => pill(g, t.ansi1 ?? t.blocked, t)))
+      .when(p.draft, (e) => e.child(pill("draft", t.dim, t)));
   }
 
-  section(title, list, key, tagsOf, t) {
+  section(title, list, key, tagsOf, t, extra = null) {
     return v_flex().gap(2)
-      .child(div().px(6).font_semibold().child(`${title} · ${list.length}`))
+      .child(h_flex().gap(6).items_center().px(6).h(20)
+        .child(div().font_semibold().child(title))
+        .child(pill(String(list.length), t.dim, t))
+        .when(extra != null, (e) => e.child(pill(extra, t.ansi1 ?? t.blocked, t))))
       .children(list.length
         ? list.map((p, i) => this.prRow(p, i, key, tagsOf(p), t))
         : [div().px(6).text_size(11).text_color(t.dim).child("Nothing waiting")]);
@@ -203,7 +210,8 @@ export default class GithubPrs extends View {
   // Worktrees this mod made, their PR now merged or closed: a click opens Herdr's own remove dialog.
   cleanSection(t) {
     return v_flex().gap(2)
-      .child(div().px(6).font_semibold().child(`Worktrees to clean up · ${this.finished.length}`))
+      .child(h_flex().gap(6).items_center().px(6).h(20)
+        .child(div().font_semibold().child("Worktrees to clean up")).child(pill(String(this.finished.length), t.dim, t)))
       .children(this.finished.map((w, i) =>
         h_flex().id(`gp-clean-${i}`).gap(8).items_center().px(6).py(4).rounded(5).cursor_pointer()
           .hover((s) => s.bg(t.hover)).tooltip(`Remove ${w.path}`)
@@ -225,7 +233,7 @@ export default class GithubPrs extends View {
       const add = (node, n) => { if (parts.length) parts.push(rule(t)); parts.push(node); heights.push(HEAD_H + Math.max(1, n) * ROW_H); };
       if (this.finished.length) add(this.cleanSection(t), this.finished.length);
       add(this.section("Review requested", d.review, "r", () => [], t), d.review.length);
-      add(this.section(`My PRs (${d.fix} to fix)`, d.mine, "m", (p) => p.reasons, t), d.mine.length);
+      add(this.section("My PRs", d.mine, "m", (p) => p.reasons, t, d.fix ? `${d.fix} to fix` : null), d.mine.length);
       add(this.section("Also involving me", d.other, "o", () => [], t), d.other.length);
       if (!d.review.length && !d.mine.length && !d.other.length) parts.unshift(div().px(6).text_color(t.dim).child(`No open PRs for ${this.login()}.`));
       const h = heights.reduce((a, b) => a + b, 0) + (heights.length - 1) * SECTION_GAP;
@@ -234,9 +242,12 @@ export default class GithubPrs extends View {
       body.child(div().text_color(t.dim).child(this.error ?? "Loading…"));
     }
     return body.child(rule(t))
-      .child(h_flex().gap(2).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(11).px(6).text_color(this.error ? (t.ansi1 ?? t.blocked) : t.dim)
-          .child(this.error ?? `${this.login()} · click a PR to open it`))
+      .child(h_flex().gap(8).items_center().px(2)
+        .child(this.avatar(this.login(), 20, t))
+        .child(v_flex().flex_1().min_w(0)
+          .child(div().truncate().text_size(12).text_color(t.foreground).child(this.login()))
+          .child(div().truncate().text_size(10.5).text_color(this.error ? (t.ansi1 ?? t.blocked) : t.dim)
+            .child(this.error ?? (d ? `Updated ${new Date(this.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · click a PR to open it` : "Loading…"))))
         .child(iconButton("gp-refresh", "refresh", cooling ? "Refreshing…" : "Refresh now", (cx) => { this.fetch(cx); cx.notify(); }, t, !cooling))
         .child(iconButton("gp-settings", "gear", "Settings", (cx) => { this.panel = "settings"; cx.notify(); }, t)));
   }
