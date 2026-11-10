@@ -27,4 +27,9 @@ assert.ok(allowed("acme-labs/x", { exclude: ["acme"] }) && !allowed("acme/x", { 
 assert.ok(allowed("o/r") && allowed("o/r", { include: [] }));
 assert.deepEqual(parseList(" a/b, c  d,,"), ["a/b", "c", "d"]);
 assert.deepEqual(summarize({ data: { review: { nodes: [pr({ number: 1 })] } } }, { exclude: ["o"] }).review, []);
+const t = (n, repo, updated, extra = {}) => pr({ number: n, repository: { nameWithOwner: repo }, updatedAt: updated, ...extra });
+const reply = { data: { mine: { nodes: [t(1, "b/x", "2026-01-03"), t(2, "a/y", "2026-01-01"), t(3, "b/x", "2026-01-02", { reviewDecision: "CHANGES_REQUESTED" })] } } };
+assert.deepEqual(summarize(reply).mine.map((p) => p.number), [3, 1, 2]);              // attention: needing action first, then recent
+assert.deepEqual(summarize(reply, undefined, "recent").mine.map((p) => p.number), [1, 3, 2]); // pure recency
+assert.deepEqual(summarize(reply, undefined, "repo").mine.map((p) => p.number), [2, 1, 3]);   // a/y, then b/x newest first
 console.log("ok");
