@@ -45,6 +45,7 @@ status row, where the card opens upward. The chip is about 330 px wide with all 
 ## Settings (⚙ in the card)
 
 - **GitHub account:** follow gh's active account (default) or pick a login. Nothing is switched globally.
+- **Sort:** needs attention first (default), recent activity, or grouped by repo.
 - **Refresh:** 1, 3 (default), 5, 10 or 30 minutes.
 - **Filter:** only show, or never show, listed orgs or repos (`acme, acme/widgets`).
 - **Git folders:** where your repos live, per account, searched three levels deep. Folders of open spaces are
