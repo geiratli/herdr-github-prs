@@ -199,11 +199,11 @@ export default class GithubPrs extends View {
           .when(p.draft, (e) => e.child(pill("draft", t.dim, t)))));
   }
 
-  // Grouped by repo: a small repo name above each group's first row.
+  // Grouped by repo: a shaded repo header above each group's first row.
   groupRows(list, key, tagsOf, t) {
     const rows = [];
     list.forEach((p, i) => {
-      if (i === 0 || list[i - 1].repo !== p.repo) rows.push(div().px(6).pt(i ? 4 : 0).text_size(10.5).text_color(t.dim).child(p.repo));
+      if (i === 0 || list[i - 1].repo !== p.repo) rows.push(div().mt(i ? 8 : 0).px(6).py(2).rounded(4).bg(t.raised).text_size(11).font_semibold().text_color(t.foreground).truncate().child(p.repo));
       rows.push(this.prRow(p, i, key, tagsOf(p), t));
     });
     return rows;
@@ -243,7 +243,7 @@ export default class GithubPrs extends View {
     if (d) {
       const parts = [];
       const heights = [];
-      const rowsOf = (l) => l.length + (prefs().sort === "repo" ? new Set(l.map((p) => p.repo)).size * 0.4 : 0); // group headings
+      const rowsOf = (l) => l.length + (prefs().sort === "repo" ? new Set(l.map((p) => p.repo)).size * 0.7 : 0); // group headings
       const add = (node, n) => { if (parts.length) parts.push(rule(t)); parts.push(node); heights.push(HEAD_H + Math.max(1, n) * ROW_H); };
       if (this.finished.length) add(this.cleanSection(t), this.finished.length);
       add(this.section("Review requested", d.review, "r", () => [], t), rowsOf(d.review));
