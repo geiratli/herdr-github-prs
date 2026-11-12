@@ -50,6 +50,7 @@ export default class GithubPrs extends View {
     this.open = false;     // is the card showing (we drive a Popover by hand: a HoverCard can't be held open)
     this.over = { trigger: false, card: false };
     this.seq = 0;          // bumps on every hover change, so stale timers do nothing
+    this.keepOpenUntil = 0; // the click that opens the account panel also toggles the popover: ignore that close
     this.pinMenu = false;  // the click menu is open: the card stays until something is picked
     // Comma-separated "org" or "org/repo" lists; saved as you type.
     const list = (key) => {
@@ -106,6 +107,11 @@ export default class GithubPrs extends View {
     cx.notify();
   }
 
+  showAccounts(cx) {
+    this.keepOpenUntil = Date.now() + 400;
+    this.panel = "accounts"; this.open = true; cx.notify();
+  }
+
   // Who the card is showing: the chosen login, else gh's active one.
   login() { return prefs().account || this.accounts[0] || "the active gh account"; }
 
@@ -145,7 +151,7 @@ export default class GithubPrs extends View {
         .child(div().text_size(this.top ? 11.5 : 10.5).text_color(t.dim).child(label));
     const content = h_flex().id("gp-content").gap(8).items_center().flex_none()
       .child(div().id("gp-logo").cursor_pointer().tooltip("Switch account")
-        .on_click((_e, cx) => { this.panel = "accounts"; this.open = true; cx.notify(); })
+        .on_click((_e, cx) => { cx.stop_propagation(); this.showAccounts(cx); })
         .child(svg(`mods/${MOD}/icons/github.svg`).size(this.top ? 16 : 14).text_color(t.muted)))
       .child(stat("review", d?.review.length ?? 0, t.ansi3 ?? t.done))
       .child(stat("mine", d?.mine.length ?? 0, t.foreground))
@@ -158,7 +164,7 @@ export default class GithubPrs extends View {
       .when(this.top, (e) => e.border_b(1)).when(!this.top, (e) => e.border_t(1))
       .child(Popover.new("gp-panel").anchor(this.top ? "top_right" : "bottom_right")
         .open(this.open).overlay_closable(!this.menuUp())
-        .on_open_change((open, cx) => { if (!open && this.menuUp()) return; // a press in the click menu is "outside" to the card
+        .on_open_change((open, cx) => { if (!open && (this.menuUp() || Date.now() < this.keepOpenUntil)) return; // a press in the click menu is "outside" to the card
           this.open = open; if (!open) this.panel = "list"; cx.notify(); })
         .trigger(div().id("gp-trigger").on_hover((on, cx) => this.hover("trigger", on, cx)).child(content))
         .content((this.panel === "settings" ? this.settings(t) : this.panel === "accounts" ? this.accountsPanel(t) : this.card(t)).on_hover((on, cx) => this.hover("card", on, cx))));
@@ -244,8 +250,10 @@ export default class GithubPrs extends View {
       .text_size(12).text_color(t.foreground);
     const head = h_flex().gap(8).items_center().px(2)
       .child(div().flex_1())
-      .child(this.avatar(this.login(), 20, t))
-      .child(div().truncate().text_size(12).text_color(t.foreground).child(this.login()))
+      .child(h_flex().id("gp-profile").gap(8).items_center().h(24).px(4).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Switch account")
+        .on_click((_e, cx) => this.showAccounts(cx))
+        .child(this.avatar(this.login(), 20, t))
+        .child(div().truncate().text_size(12).text_color(t.foreground).child(this.login())))
       .child(iconButton("gp-settings", "gear", "Settings", (cx) => { this.panel = "settings"; cx.notify(); }, t));
     const foot = h_flex().gap(8).items_center().px(2)
       .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(this.error ? (t.ansi1 ?? t.blocked) : t.dim)
