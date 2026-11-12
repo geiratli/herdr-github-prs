@@ -74,7 +74,7 @@ export default class GithubPrs extends View {
     } else if (!over() && this.open) {
       const tryClose = (cx) => {
         if (seq !== this.seq || over()) return;
-        if (this.menuUp() || this.panel === "settings") return cx.timer.after(600, tryClose); // look again later
+        if (this.menuUp() || this.panel !== "list") return cx.timer.after(600, tryClose); // look again later
         this.open = false; cx.notify();
       };
       cx.timer.after(CLOSE_DELAY, tryClose);
@@ -144,7 +144,9 @@ export default class GithubPrs extends View {
         .child(div().text_color(n ? color : t.dim).child(d ? String(n) : "—"))
         .child(div().text_size(this.top ? 11.5 : 10.5).text_color(t.dim).child(label));
     const content = h_flex().id("gp-content").gap(8).items_center().flex_none()
-      .child(svg(`mods/${MOD}/icons/github.svg`).size(this.top ? 16 : 14).text_color(t.muted))
+      .child(div().id("gp-logo").cursor_pointer().tooltip("Switch account")
+        .on_click((_e, cx) => { this.panel = "accounts"; this.open = true; cx.notify(); })
+        .child(svg(`mods/${MOD}/icons/github.svg`).size(this.top ? 16 : 14).text_color(t.muted)))
       .child(stat("review", d?.review.length ?? 0, t.ansi3 ?? t.done))
       .child(stat("mine", d?.mine.length ?? 0, t.foreground))
       .child(stat("to fix", d?.fix ?? 0, t.ansi1 ?? t.blocked))
@@ -159,7 +161,7 @@ export default class GithubPrs extends View {
         .on_open_change((open, cx) => { if (!open && this.menuUp()) return; // a press in the click menu is "outside" to the card
           this.open = open; if (!open) this.panel = "list"; cx.notify(); })
         .trigger(div().id("gp-trigger").on_hover((on, cx) => this.hover("trigger", on, cx)).child(content))
-        .content((this.panel === "settings" ? this.settings(t) : this.card(t)).on_hover((on, cx) => this.hover("card", on, cx))));
+        .content((this.panel === "settings" ? this.settings(t) : this.panel === "accounts" ? this.accountsPanel(t) : this.card(t)).on_hover((on, cx) => this.hover("card", on, cx))));
   }
 
   // ---------- hover card ----------
@@ -240,6 +242,15 @@ export default class GithubPrs extends View {
     const cooling = Date.now() - this.fetchedAt < COOLDOWN;
     const body = v_flex().id("gp-body").w(PANEL_W).p(10).gap(10).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
       .text_size(12).text_color(t.foreground);
+    const head = h_flex().gap(8).items_center().px(2)
+      .child(div().flex_1())
+      .child(this.avatar(this.login(), 20, t))
+      .child(div().truncate().text_size(12).text_color(t.foreground).child(this.login()))
+      .child(iconButton("gp-refresh", "refresh", cooling ? "Refreshing…" : "Refresh now", (cx) => { this.fetch(cx); cx.notify(); }, t, !cooling))
+      .child(iconButton("gp-settings", "gear", "Settings", (cx) => { this.panel = "settings"; cx.notify(); }, t));
+    const foot = div().truncate().px(2).text_size(10.5).text_color(this.error ? (t.ansi1 ?? t.blocked) : t.dim)
+      .child(this.error ?? (d ? `Updated ${new Date(this.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · click a PR to open it` : "Loading…"));
+    body.child(head).child(rule(t));
     if (d) {
       const parts = [];
       const heights = [];
@@ -255,15 +266,7 @@ export default class GithubPrs extends View {
     } else {
       body.child(div().text_color(t.dim).child(this.error ?? "Loading…"));
     }
-    return body.child(rule(t))
-      .child(h_flex().gap(8).items_center().px(2)
-        .child(this.avatar(this.login(), 20, t))
-        .child(v_flex().flex_1().min_w(0)
-          .child(div().truncate().text_size(12).text_color(t.foreground).child(this.login()))
-          .child(div().truncate().text_size(10.5).text_color(this.error ? (t.ansi1 ?? t.blocked) : t.dim)
-            .child(this.error ?? (d ? `Updated ${new Date(this.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · click a PR to open it` : "Loading…"))))
-        .child(iconButton("gp-refresh", "refresh", cooling ? "Refreshing…" : "Refresh now", (cx) => { this.fetch(cx); cx.notify(); }, t, !cooling))
-        .child(iconButton("gp-settings", "gear", "Settings", (cx) => { this.panel = "settings"; cx.notify(); }, t)));
+    return body.child(rule(t)).child(foot);
   }
 
   // ---------- settings: where your repos live ----------
@@ -293,16 +296,12 @@ export default class GithubPrs extends View {
       .fallback(AvatarFallback.new().size_full().flex().items_center().justify_center().text_size(size * 0.4).text_color(t.dim).child(initials));
   }
 
-  settings(t) {
-    const roots = rootsOf(currentLogin());
-    const label = (text) => div().px(2).pt(4).text_size(10.5).font_semibold().text_color(t.dim).child(text.toUpperCase());
-    const hint = (text) => div().px(2).text_size(11).text_color(t.dim).child(text);
-    const field = (state) => div().px(8).h(28).flex().items_center().rounded(6).border(1).border_color(t.border).bg(t.raised).child(Input.new(state));
+  accountsPanel(t) {
     const chosen = prefs().account;
     const acct = (id, login, sub, i) =>
       h_flex().id(`gp-acct-${i}`).gap(8).items_center().px(8).h(36).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
         .when(chosen === id, (e) => e.bg(t.selected))
-        .on_click((_e, cx) => this.setAccount(id, cx))
+        .on_click((_e, cx) => { this.setAccount(id, cx); this.panel = "list"; })
         .child(this.avatar(login, 24, t))
         .child(v_flex().flex_1().min_w(0)
           .child(div().truncate().text_color(t.foreground).child(login || "—"))
@@ -312,13 +311,23 @@ export default class GithubPrs extends View {
       .text_size(12).text_color(t.foreground)
       .child(h_flex().gap(6).items_center().h(24)
         .child(iconButton("gp-back", "back", "Back", (cx) => { this.panel = "list"; cx.notify(); }, t))
-        .child(div().font_semibold().text_size(13).child("Settings")))
-      .child(label("GitHub account"))
+        .child(div().font_semibold().text_size(13).child("GitHub account")))
       .child(v_flex().gap(2)
         .child(acct("", this.accounts[0] ?? "", "Follow gh's active account", -1))
         .children(this.accounts.map((a, i) => acct(a, a, "Use this login only", i))))
-      .child(hint("Nothing is switched globally. The login's token lives only inside the helper process."))
-      .child(rule(t))
+      .child(div().px(2).text_size(11).text_color(t.dim).child("Nothing is switched globally. The login's token lives only inside the helper process."));
+  }
+
+  settings(t) {
+    const roots = rootsOf(currentLogin());
+    const label = (text) => div().px(2).pt(4).text_size(10.5).font_semibold().text_color(t.dim).child(text.toUpperCase());
+    const hint = (text) => div().px(2).text_size(11).text_color(t.dim).child(text);
+    const field = (state) => div().px(8).h(28).flex().items_center().rounded(6).border(1).border_color(t.border).bg(t.raised).child(Input.new(state));
+    return v_flex().id("gp-body").w(PANEL_W).p(12).gap(8).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
+      .text_size(12).text_color(t.foreground)
+      .child(h_flex().gap(6).items_center().h(24)
+        .child(iconButton("gp-back", "back", "Back", (cx) => { this.panel = "list"; cx.notify(); }, t))
+        .child(div().font_semibold().text_size(13).child("Settings")))
       .child(label("Sort"))
       .child(h_flex().gap(4).children([["attention", "Needs attention first"], ["recent", "Recent activity"], ["repo", "By repo"]].map(([id, name]) =>
         div().id(`gp-sort-${id}`).flex_1().h(26).rounded(6).flex().items_center().justify_center().cursor_pointer()
