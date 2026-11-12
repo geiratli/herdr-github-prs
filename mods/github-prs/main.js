@@ -289,6 +289,14 @@ export default class GithubPrs extends View {
     });
   }
 
+  pickWorktreeDir(cx) {
+    cx.spawn(async (cx) => {
+      const folder = await pickFolder({ prompt: "Use" });
+      if (folder) setShared(KEY_PREFS, { ...prefs(), worktreeDir: folder });
+      cx.notify();
+    });
+  }
+
   // Avatars are fetched once per login into the app folder (a mod can only draw images from there).
   loadAvatars(logins, cx) {
     for (const login of logins) {
@@ -357,6 +365,15 @@ export default class GithubPrs extends View {
       .child(field(this.includeInput))
       .child(hint("Never show these"))
       .child(field(this.excludeInput))
+      .child(rule(t))
+      .child(label("Worktree folder"))
+      .child(hint("Where new PR checkouts go, as <folder>/<repo>/<branch>. Existing worktrees stay where they are."))
+      .child(h_flex().gap(6).items_center()
+        .child(div().flex_1().min_w(0).truncate().px(8).h(28).flex().items_center().rounded(6).bg(t.raised).child(prefs().worktreeDir || "~/.herdr/worktrees (default)"))
+        .child(div().id("gp-wt-pick").px(8).h(28).flex().items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover)).text_color(t.accent)
+          .on_click((_e, cx) => this.pickWorktreeDir(cx)).child("Choose…"))
+        .when(!!prefs().worktreeDir, (e) => e.child(div().id("gp-wt-reset").px(8).h(28).flex().items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover)).text_color(t.dim)
+          .on_click((_e, cx) => { setShared(KEY_PREFS, { ...prefs(), worktreeDir: "" }); cx.notify(); }).child("Reset"))))
       .child(rule(t))
       .child(label(`Git folders for ${this.login()}`))
       .child(hint("Searched three levels deep for a PR's repo. Folders of your open spaces are always searched too."))
