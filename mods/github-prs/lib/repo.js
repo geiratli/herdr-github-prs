@@ -22,9 +22,9 @@ export function parseWorktrees(text) {
 // A fork's branch name could clash with one of ours (its `main`), so forks get pr-<n>.
 export const branchFor = (pr) => (pr.cross ? `pr-${pr.number}` : pr.headRef);
 
-// Herdr's own convention (mods/worktree): <home>/.herdr/worktrees/<repo>/<branch, slashes as dashes>.
+// <dir>/<repo>/<branch, slashes as dashes>; dir defaults to Herdr's own (mods/worktree): <home>/.herdr/worktrees.
 const slug = (branch) => branch.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-export const worktreePath = (home, repo, branch) => `${home}/.herdr/worktrees/${repo}/${slug(branch)}`;
+export const worktreePath = (home, repo, branch, dir = "") => `${dir.replace(/\/+$/, "") || `${home}/.herdr/worktrees`}/${repo}/${slug(branch)}`;
 
 const inside = (p, dir) => p === dir || p.startsWith(dir + "/");
 
