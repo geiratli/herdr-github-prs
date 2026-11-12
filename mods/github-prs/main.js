@@ -246,10 +246,11 @@ export default class GithubPrs extends View {
       .child(div().flex_1())
       .child(this.avatar(this.login(), 20, t))
       .child(div().truncate().text_size(12).text_color(t.foreground).child(this.login()))
-      .child(iconButton("gp-refresh", "refresh", cooling ? "Refreshing…" : "Refresh now", (cx) => { this.fetch(cx); cx.notify(); }, t, !cooling))
       .child(iconButton("gp-settings", "gear", "Settings", (cx) => { this.panel = "settings"; cx.notify(); }, t));
-    const foot = div().truncate().px(2).text_size(10.5).text_color(this.error ? (t.ansi1 ?? t.blocked) : t.dim)
-      .child(this.error ?? (d ? `Updated ${new Date(this.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · click a PR to open it` : "Loading…"));
+    const foot = h_flex().gap(8).items_center().px(2)
+      .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(this.error ? (t.ansi1 ?? t.blocked) : t.dim)
+        .child(this.error ?? (d ? `Updated ${new Date(this.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · click a PR to open it` : "Loading…")))
+      .child(iconButton("gp-refresh", "refresh", cooling ? "Refreshing…" : "Refresh now", (cx) => { this.fetch(cx); cx.notify(); }, t, !cooling));
     body.child(head).child(rule(t));
     if (d) {
       const parts = [];
