@@ -39,3 +39,12 @@ export function summarize(reply, filter, sort = "attention") {
   const other = arrange([...nodes("involved"), ...nodes("reviewed")].filter((p) => !seen.has(p.url) && seen.add(p.url)), sort);
   return { review, mine, other, fix: mine.filter((p) => p.reasons.length).length };
 }
+
+// Is release tag "v1.2.3" newer than this version? Anything that isn't plain x.y.z is never newer.
+export const isNewer = (tag, current) => {
+  const v = (s) => /^v?(\d+)\.(\d+)\.(\d+)$/.exec(String(s))?.slice(1).map(Number);
+  const a = v(tag), b = v(current);
+  if (!a || !b) return false;
+  const i = a.findIndex((n, k) => n !== b[k]);
+  return i >= 0 && a[i] > b[i];
+};

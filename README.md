@@ -67,6 +67,10 @@ the letter or number shown), Esc goes back, then closes.
 Community mod managers flag mods that run programs, so, plainly:
 
 - It runs `gh`, `git` and `sh` helper scripts (`helpers/`), and `curl` once per login for the avatar.
+- **Updates:** at start and every 6 hours it asks GitHub for this repo's latest release (`gh api`). If it's newer,
+  the card shows **Update to vX**. Nothing changes until you click it: then `helpers/update.sh` downloads that
+  release with `curl`, runs `herdr-app check` on it, and copies it over `mods/github-prs/` (your edits there are
+  overwritten). Herdr reloads the mod.
 - Per refresh it makes one GraphQL call to GitHub (four searches) through your own `gh` login, plus
   `gh auth status`, and one `gh pr view` per worktree it created whose PR is no longer listed.
 - **Tokens:** the mod never reads, stores, logs or shows a token. With a chosen account, `helpers/gh.sh` puts
