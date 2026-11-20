@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The card offers **Update to vX** when a newer GitHub release exists (checked at start and every 6 hours).
+  One click downloads it, checks it loads, and replaces the mod's files. Releases must bump `VERSION` in `main.js`.
+
 ## v0.1.0 - 2026-11-11
 
 First public version.

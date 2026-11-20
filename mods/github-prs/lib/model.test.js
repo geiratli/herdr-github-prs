@@ -1,6 +1,6 @@
 // Run: node lib/model.test.js
 import assert from "node:assert";
-import { allowed, parseList, summarize } from "./model.js";
+import { allowed, isNewer, parseList, summarize } from "./model.js";
 
 const pr = (o) => ({ number: 1, title: "t", url: "u" + (o.number ?? 1), isDraft: false, headRefName: "b", isCrossRepository: false, reviewDecision: null, repository: { nameWithOwner: "o/r" },
   commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }] }, ...o });
@@ -32,4 +32,6 @@ const reply = { data: { mine: { nodes: [t(1, "b/x", "2026-01-03"), t(2, "a/y", "
 assert.deepEqual(summarize(reply).mine.map((p) => p.number), [3, 1, 2]);              // attention: needing action first, then recent
 assert.deepEqual(summarize(reply, undefined, "recent").mine.map((p) => p.number), [1, 3, 2]); // pure recency
 assert.deepEqual(summarize(reply, undefined, "repo").mine.map((p) => p.number), [2, 1, 3]);   // a/y, then b/x newest first
+assert.ok(isNewer("v0.2.0", "0.1.0") && isNewer("v0.1.10", "0.1.9") && isNewer("1.0.0", "0.9.9"));
+assert.ok(!isNewer("v0.1.0", "0.1.0") && !isNewer("v0.0.9", "0.1.0") && !isNewer("v0.2.0-beta", "0.1.0") && !isNewer(null, "0.1.0")); // same, older, odd tags: no
 console.log("ok");

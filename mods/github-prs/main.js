@@ -7,10 +7,12 @@
 import { View, div, svg, image } from "gpui-kit";
 import { Avatar, AvatarFallback, AvatarImage, Popover, Input, InputState, ScrollHandle, h_flex, v_flex } from "gpui-base";
 import { exec, theme, appHome, props, shared, setShared, openOverlay, closeOverlay, knownAgents, pickFolder, nextCommand } from "herdr";
-import { parseList, summarize } from "./lib/model.js";
+import { isNewer, parseList, summarize } from "./lib/model.js";
 import { KEY_ACTIVE, KEY_PREFS, currentLogin, finishedWorktrees, gh, openPr, prefs, removeWorktree, rootsOf, setRoots } from "./lib/actions.js";
 
 const MOD = "github-prs";
+const VERSION = "0.1.0";       // bump with each release tag; the card offers newer GitHub releases
+const REPO = "geiratli/herdr-github-prs";
 const avatarPath = (login) => `data/${MOD}/avatars/${login}.png`;
 const KEY_REQ = `${MOD}.request`;  // the click menu asks the bar (which lives on) to do the work
 const KEY_BEAT = `${MOD}.menu-beat`;
@@ -68,6 +70,8 @@ export default class GithubPrs extends View {
     this.cursor = 0; this.seen = 0; this.cardH = 0;
     this.agents = shared(KNOWN_AGENTS)?.[""] ?? [];
     this.pinMenu = false;  // the click menu is open: the card stays until something is picked
+    this.latest = null;    // newest release tag on GitHub, when it's newer than VERSION
+    this.updating = false;
     // Comma-separated "org" or "org/repo" lists; saved as you type.
     const list = (key) => {
       const st = InputState.new({ placeholder: "acme, acme/widgets", value: prefs()[key].join(", ") });
@@ -78,6 +82,8 @@ export default class GithubPrs extends View {
     this.excludeInput = list("exclude");
     this.seenReq = shared(KEY_REQ)?.at ?? 0;
     this.fetch(cx);
+    this.checkUpdate(cx);
+    cx.timer.every(6 * 60 * 60 * 1000, (cx) => this.checkUpdate(cx));
     cx.timer.every(60 * 1000, (cx) => { if (Date.now() - this.fetchedAt >= prefs().everyMin * 60 * 1000) this.fetch(cx); });
     cx.timer.every(400, () => { if (this.kbd && this.panel === "list" && !this.menuUp() && !this.handle.is_focused()) this.handle.focus(); }); // back from the menu
     cx.spawn(async (cx) => { for (;;) { if (await nextCommand() === "toggle") this.toggleKeyboard(cx); } });
@@ -238,6 +244,29 @@ export default class GithubPrs extends View {
     });
   }
 
+  // ---------- updates ----------
+
+  checkUpdate(cx) {
+    cx.spawn(async (cx) => {
+      const r = await gh(["api", `repos/${REPO}/releases/latest`, "--jq", ".tag_name"]).catch(() => null);
+      const tag = r?.code === 0 ? r.stdout.trim() : null;
+      if (tag && isNewer(tag, VERSION)) { this.latest = tag; cx.notify(); } // a failed check keeps what we knew
+    });
+  }
+
+  // Overwrites this mod's folder with the release; Herdr reloads it once main.js lands, so nothing runs after.
+  update(cx) {
+    if (this.updating || !this.latest) return;
+    this.updating = true;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      const r = await exec("sh", [`${appHome()}/mods/${MOD}/helpers/update.sh`, this.latest, `${appHome()}/mods/${MOD}`], { timeout: 120000 }).catch((e) => ({ code: -1, stderr: String(e?.message ?? e) }));
+      if (r.code !== 0) this.error = `Update failed: ${(r.stderr || "unknown error").trim().split("\n").pop()}`;
+      this.updating = false;
+      cx.notify();
+    });
+  }
+
   // ---------- status bar ----------
 
   renderBar() {
@@ -389,6 +418,10 @@ export default class GithubPrs extends View {
       });
     this.partOf.clear(); this.rowY.clear(); this.cursor = 0; this.seen = 0;
     const head = h_flex().gap(8).items_center().px(2)
+      .when(!!this.latest, (e) => e.child(div().id("gp-update").px(8).h(24).flex().items_center().rounded(5).border(1).border_color(t.accent).text_color(t.accent)
+        .tooltip(`Replaces the files in mods/${MOD} with release ${this.latest} from GitHub`)
+        .when(!this.updating, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.update(cx)))
+        .child(this.updating ? "Updating…" : `Update to ${this.latest}`)))
       .child(div().flex_1())
       .child(h_flex().id("gp-profile").gap(8).items_center().h(24).px(4).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Switch account")
         .on_click((_e, cx) => this.showAccounts(cx))
