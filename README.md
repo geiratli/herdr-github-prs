@@ -42,6 +42,17 @@ Then add a block to a layout in `~/.config/herdr-app/layouts/`:
 Put it in a top row (next to the tabs). `anchor: "top"` makes the card open downward; leave it out for a bottom
 status row, where the card opens upward. The chip is about 330 px wide with all five counts.
 
+## Keyboard
+
+Bind a key in `~/.config/herdr-app/keys.json` (the key is yours to pick; `cmd-shift-g` is a free one):
+
+```json
+"global": { "cmd-shift-g": "github-prs.toggle" }
+```
+
+The key opens the card with the first PR selected. ↑/↓ move, Enter opens that PR's actions (↑/↓ and Enter again, or
+the letter or number shown), Esc goes back, then closes.
+
 ## Settings (⚙ in the card)
 
 - **GitHub account:** follow gh's active account (default) or pick a login. Nothing is switched globally.

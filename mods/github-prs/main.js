@@ -5,8 +5,8 @@
 //
 // The same mod is also the click menu: opened as a popup, `props().pr` is set and it draws that.
 import { View, div, svg, image } from "gpui-kit";
-import { Avatar, AvatarFallback, AvatarImage, Popover, Input, InputState, h_flex, v_flex } from "gpui-base";
-import { exec, theme, appHome, props, shared, setShared, openOverlay, closeOverlay, knownAgents, pickFolder } from "herdr";
+import { Avatar, AvatarFallback, AvatarImage, Popover, Input, InputState, ScrollHandle, h_flex, v_flex } from "gpui-base";
+import { exec, theme, appHome, props, shared, setShared, openOverlay, closeOverlay, knownAgents, pickFolder, nextCommand } from "herdr";
 import { parseList, summarize } from "./lib/model.js";
 import { KEY_ACTIVE, KEY_PREFS, currentLogin, finishedWorktrees, gh, openPr, prefs, removeWorktree, rootsOf, setRoots } from "./lib/actions.js";
 
@@ -19,6 +19,8 @@ const EVERY_CHOICES = [1, 3, 5, 10, 30]; // minutes between fetches, as offered 
 const COOLDOWN = 15 * 1000;    // ms, manual refresh
 const PANEL_W = 600;
 const MENU_W = 260;
+const CARD_MARGIN = 54, CARD_TOP = 36; // estimates for opening the menu from the keyboard: the card's gap to the window's right edge, and its top
+const MENU_SHIFT = 24;          // measured, not derived: below a top bar the popup landed ~24px right of where cardLeft says
 const CARD_INSET = 12;          // card padding (10) + border (1) + row margin (1): row left edge → card left edge
 const menuHeight = (agents) => Math.min(491, 90 + (2 + agents) * 31); // browser + terminal rows, then the agents
 const MAX_LIST_H = 640;        // px; the list scrolls past this (a mod can't read the window height)
@@ -50,6 +52,15 @@ export default class GithubPrs extends View {
     this.open = false;     // is the card showing (we drive a Popover by hand: a HoverCard can't be held open)
     this.over = { trigger: false, card: false };
     this.seq = 0;          // bumps on every hover change, so stale timers do nothing
+    this.keepOpenUntil = 0; // the click that opens the account panel also toggles the popover: ignore that close
+    this.handle = cx.focus_handle(); // keyboard: the card takes it when opened with the key (keys.json → github-prs.toggle)
+    this.scroll = ScrollHandle.new();
+    this.partOf = new Map(); // PR url → index of its section in the list, to scroll the selection into view
+    this.kbd = false;      // opened with the key: stays until Escape, a pick, or a click outside
+    this.selUrl = null;    // keyboard selection (by url, so it survives a refresh)
+    this.menuPr = null;    // keyboard: the PR whose action menu is drawn left of the card (top bar)
+    this.at = 0;           // highlighted row in that menu
+    this.agents = shared(KNOWN_AGENTS)?.[""] ?? [];
     this.pinMenu = false;  // the click menu is open: the card stays until something is picked
     // Comma-separated "org" or "org/repo" lists; saved as you type.
     const list = (key) => {
@@ -62,6 +73,88 @@ export default class GithubPrs extends View {
     this.seenReq = shared(KEY_REQ)?.at ?? 0;
     this.fetch(cx);
     cx.timer.every(60 * 1000, (cx) => { if (Date.now() - this.fetchedAt >= prefs().everyMin * 60 * 1000) this.fetch(cx); });
+    cx.timer.every(400, () => { if (this.kbd && this.panel === "list" && !this.menuUp() && !this.handle.is_focused()) this.handle.focus(); }); // back from the menu
+    cx.spawn(async (cx) => { for (;;) { if (await nextCommand() === "toggle") this.toggleKeyboard(cx); } });
+  }
+
+  // ---------- keyboard ----------
+
+  flat() { const d = this.data; return d ? [...d.review, ...d.mine, ...d.other] : []; } // the order the card shows
+
+  toggleKeyboard(cx) {
+    if (this.open && this.kbd) return this.closeKeyboard(cx);
+    this.kbd = true; this.open = true; this.panel = "list";
+    this.selUrl = this.flat()[0]?.url ?? null;
+    this.grab(cx);
+    cx.notify();
+  }
+
+  // Take the keyboard once the card (or its next panel) has been drawn; retry, as the popover may settle after us.
+  grab(cx) {
+    for (const ms of [80, 300, 700]) cx.timer.after(ms, () => { if (this.kbd && !this.handle.is_focused()) this.handle.focus(); });
+  }
+
+  closeKeyboard(cx) { this.kbd = false; this.open = false; this.panel = "list"; this.menuPr = null; cx.notify(); }
+
+  onKey(e, cx) {
+    if (e.modifiers.control || e.modifiers.platform || e.modifiers.alt) return;
+    if (this.menuPr) return this.menuKey(e, cx);
+    const list = this.flat();
+    const i = list.findIndex((p) => p.url === this.selUrl);
+    if (e.key === "down" || e.key === "up") {
+      if (!list.length) return;
+      const n = i < 0 ? 0 : (i + (e.key === "down" ? 1 : list.length - 1)) % list.length;
+      this.selUrl = list[n].url;
+      this.scroll.scroll_to_item(this.partOf.get(this.selUrl) ?? 0);
+    } else if ((e.key === "enter" || e.key === (this.top ? "left" : "right")) && i >= 0) this.menuFor(list[i], cx); // the arrow toward the side the menu opens on, or Enter
+    else if (e.key === "escape") return this.closeKeyboard(cx);
+    cx.notify();
+  }
+
+  // Top bar: the menu is drawn inside the card's popover, left of the card, so it needs no screen coordinates.
+  // Bottom bar: a popup right of the card, as with a click.
+  menuFor(pr, cx) {
+    if (!this.top) return this.openMenu(pr, this.cardLeft ?? (this.vw || 1200) - PANEL_W - CARD_MARGIN, (this.vh || 800) - 60, 28);
+    this.menuPr = pr; this.at = 0;
+    // the cached list shows at once; Herdr's fresh one replaces it
+    knownAgents().then((a) => { this.agents = a; cx.notify(); }).catch(() => {});
+    cx.notify();
+  }
+
+  menuRun(extra) { setShared(KEY_REQ, { at: Date.now(), pr: this.menuPr, ...extra }); } // render() sees the request and closes the card
+
+  menuRows(pr, agents, t, open, browser) {
+    return [
+      { id: "gp-browser", icon: svg(`mods/${MOD}/icons/github.svg`).size(14), name: "Open in browser", hint: "b", run: browser },
+      { id: "gp-terminal", icon: svg("icons/shell.svg").size(14), name: "Terminal in checkout", hint: "t", run: () => open(null) },
+      ...agents.map((a, i) => ({ id: `gp-${a.key}`, icon: a.tint ? svg(a.icon).size(14).text_color(t.foreground) : image(a.icon).size(14), name: a.name, hint: i < 9 ? String(i + 1) : "", run: () => open(a) })),
+    ];
+  }
+
+  // The menu's rows: title, browser, terminal, agents. `rows` as from menuRows.
+  menuChildren(pr, rows, t) {
+    const row = (r, i) => this.menuRow(r.id, r.icon, r.name, r.hint, r.run, t).when(i === this.at, (e) => e.bg(t.selected));
+    return [
+      div().px(9).pt(6).pb(4).text_size(11).text_color(t.dim).truncate().child(`${pr.repo.split("/").pop()}#${pr.number} · ${pr.title}`),
+      row(rows[0], 0), row(rows[1], 1),
+      div().px(9).pt(8).pb(4).text_size(11).text_color(t.dim).child("Start an agent in the checkout"),
+      v_flex().flex_1().min_h(0).overflow_y_scrollbar().children(rows.slice(2).map((r, i) => row(r, i + 2))),
+    ];
+  }
+
+  inlineMenuRows(t) {
+    const pr = this.menuPr;
+    const open = (a) => this.menuRun({ agent: a ? { name: a.name, run: a.run, key: a.key } : null });
+    return this.menuRows(pr, this.agents.filter((a) => a.installed), t, open, () => this.menuRun({ browser: true }));
+  }
+
+  menuKey(e, cx) {
+    const rows = this.inlineMenuRows(theme());
+    if (e.key === "down" || e.key === "up") this.at = (this.at + (e.key === "down" ? 1 : rows.length - 1)) % rows.length;
+    else if (e.key === "enter") return rows[this.at]?.run();
+    else if (e.key === "right" || e.key === "escape") this.menuPr = null; // → goes back to the card
+    else { const r = rows.find((x) => x.hint === e.key); if (r) return r.run(); }
+    cx.notify();
   }
 
   // Card visibility: open after resting on the chip, close shortly after the pointer leaves both
@@ -74,7 +167,7 @@ export default class GithubPrs extends View {
     } else if (!over() && this.open) {
       const tryClose = (cx) => {
         if (seq !== this.seq || over()) return;
-        if (this.menuUp() || this.panel === "settings") return cx.timer.after(600, tryClose); // look again later
+        if (this.menuUp() || this.kbd || this.panel !== "list") return cx.timer.after(600, tryClose); // look again later
         this.open = false; cx.notify();
       };
       cx.timer.after(CLOSE_DELAY, tryClose);
@@ -104,6 +197,11 @@ export default class GithubPrs extends View {
     this.busy = false;
     this.fetch(cx);
     cx.notify();
+  }
+
+  showAccounts(cx) {
+    this.keepOpenUntil = Date.now() + 400;
+    this.panel = "accounts"; this.open = true; cx.notify();
   }
 
   // Who the card is showing: the chosen login, else gh's active one.
@@ -144,7 +242,9 @@ export default class GithubPrs extends View {
         .child(div().text_color(n ? color : t.dim).child(d ? String(n) : "—"))
         .child(div().text_size(this.top ? 11.5 : 10.5).text_color(t.dim).child(label));
     const content = h_flex().id("gp-content").gap(8).items_center().flex_none()
-      .child(svg(`mods/${MOD}/icons/github.svg`).size(this.top ? 16 : 14).text_color(t.muted))
+      .child(div().id("gp-logo").cursor_pointer().tooltip("Switch account")
+        .on_click((_e, cx) => { cx.stop_propagation(); this.showAccounts(cx); })
+        .child(svg(`mods/${MOD}/icons/github.svg`).size(this.top ? 16 : 14).text_color(t.muted)))
       .child(stat("review", d?.review.length ?? 0, t.ansi3 ?? t.done))
       .child(stat("mine", d?.mine.length ?? 0, t.foreground))
       .child(stat("to fix", d?.fix ?? 0, t.ansi1 ?? t.blocked))
@@ -156,47 +256,69 @@ export default class GithubPrs extends View {
       .when(this.top, (e) => e.border_b(1)).when(!this.top, (e) => e.border_t(1))
       .child(Popover.new("gp-panel").anchor(this.top ? "top_right" : "bottom_right")
         .open(this.open).overlay_closable(!this.menuUp())
-        .on_open_change((open, cx) => { if (!open && this.menuUp()) return; // a press in the click menu is "outside" to the card
-          this.open = open; if (!open) this.panel = "list"; cx.notify(); })
+        .on_open_change((open, cx) => { if (!open && (this.menuUp() || Date.now() < this.keepOpenUntil)) return; // a press in the click menu is "outside" to the card
+          this.open = open; if (!open) { this.panel = "list"; this.kbd = false; this.menuPr = null; } cx.notify(); })
         .trigger(div().id("gp-trigger").on_hover((on, cx) => this.hover("trigger", on, cx)).child(content))
-        .content((this.panel === "settings" ? this.settings(t) : this.card(t)).on_hover((on, cx) => this.hover("card", on, cx))));
+        .content((this.panel === "settings" ? this.settings(t) : this.panel === "accounts" ? this.accountsPanel(t) : this.menuPr && this.top ? this.withMenu(t) : this.card(t)).on_hover((on, cx) => this.hover("card", on, cx))));
   }
 
   // ---------- hover card ----------
+
+  // The card with its action menu on the left: the popover is anchored at its right edge, so the card stays put.
+  withMenu(t) {
+    const rows = this.inlineMenuRows(t);
+    const width = Math.max(200, Math.min(MENU_W, Math.round((this.vw || 1200) - PANEL_W - CARD_MARGIN - 16)));
+    return h_flex().gap(8).items_start()
+      .child(v_flex().id("gp-inline-menu").w(width).h(menuHeight(rows.length - 2)).p(5).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
+        .text_size(12.8).text_color(t.foreground).children(this.menuChildren(this.menuPr, rows, t)))
+      .child(this.card(t));
+  }
 
   // Press: the menu (browser / terminal / agents), beside the card, never over it: the card is drawn
   // above popups, and the default "pointer" spot isn't tracked inside a hover card.
   // Bottom bar: right of the card, its bottom on the clicked row's, growing upward (no room below).
   // Top bar: the block is at the window's right edge, so left of the card, its top on the row's, growing down.
-  pick(e, p) {
-    const cached = shared(KNOWN_AGENTS)?.[""] ?? [];
-    const height = menuHeight(cached.filter((a) => a.installed).length);
+  pick(e, p, cx) {
+    if (this.top) { this.kbd = true; return this.menuFor(p, cx); } // top bar: the menu is drawn in the card, no screen coordinates
     const rowX = e.position.x - (e.local_position?.x ?? 0);
     const rowY = e.position.y - (e.local_position?.y ?? 0);
     const rowH = e.bounds?.height ?? 28;
     const cardLeft = rowX - CARD_INSET; // rows start CARD_INSET inside the card's left edge
+    this.cardLeft = cardLeft;
+    this.openMenu(p, cardLeft, rowY, rowH);
+  }
+
+  openMenu(p, cardLeft, rowY, rowH) {
+    const cached = shared(KNOWN_AGENTS)?.[""] ?? [];
+    const height = menuHeight(cached.filter((a) => a.installed).length);
+    // Top bar: the menu goes left of the card; on a narrow window it shrinks to the room there is (min 200) instead of sliding under the card.
+    const width = this.top ? Math.max(200, Math.min(MENU_W, Math.round(cardLeft - 16 - MENU_SHIFT))) : MENU_W;
     const at = this.top
-      ? { x: Math.max(8, Math.round(cardLeft - MENU_W - 8)), y: Math.round(rowY) }
+      ? { x: Math.max(8, Math.round(cardLeft - width - 8 - MENU_SHIFT)), y: Math.round(rowY) }
       : { x: Math.round(cardLeft + PANEL_W + 8), y: Math.max(8, Math.round(rowY + rowH - height)) };
     // A click inside the card doesn't dismiss an open popup, so a second click would stack another.
     if (this.menuId) try { closeOverlay(this.menuId); } catch { /* already closed */ }
     this.pinMenu = true;
     setShared(KEY_BEAT, Date.now());
-    this.menuId = openOverlay({ mod: MOD, kind: "popup", width: MENU_W, height, at, props: { pr: p } });
+    this.menuId = openOverlay({ mod: MOD, kind: "popup", width, height, at, props: { pr: p, top: this.top } });
   }
 
   prRow(p, i, key, tags, t) {
+    const arrow = (g) => div().flex_none().px(2).text_size(14).text_color(t.muted).tooltip(`Press ${g} for actions`).child(g); // points to where the menu opens
     return h_flex().id(`gp-${key}-${i}`).gap(8).items_center().px(6).py(4).rounded(5).cursor_pointer()
+      .when(this.kbd && this.top, (e) => e.child(p.url === this.selUrl ? arrow("←") : div().flex_none().w(18))) // a gap on the other rows, so the text doesn't jump
       .hover((s) => s.bg(t.hover))
+      .when(this.kbd && p.url === this.selUrl, (e) => e.bg(t.selected))
       .tooltip(`${p.title}\n${p.repo}#${p.number}`)
-      .on_mouse_down("left", (e) => this.pick(e, p))
+      .on_mouse_down("left", (e, cx) => this.pick(e, p, cx))
       .child(div().size(7).flex_none().rounded_full().bg(ciColor(p.ci, t)).tooltip(p.ci ? `CI: ${p.ci.toLowerCase()}` : "No CI"))
       .child(v_flex().flex_1().min_w(0).gap(2)
         .child(div().truncate().text_color(t.foreground).child(p.title))
         .child(h_flex().gap(6).items_center()
           .child(div().flex_none().text_size(11).text_color(t.dim).child(`${p.repo.split("/").pop()}#${p.number}`))
           .children(tags.map((g) => pill(g, t.ansi1 ?? t.blocked, t)))
-          .when(p.draft, (e) => e.child(pill("draft", t.dim, t)))));
+          .when(p.draft, (e) => e.child(pill("draft", t.dim, t)))))
+      .when(this.kbd && !this.top, (e) => e.child(p.url === this.selUrl ? arrow("→") : div().flex_none().w(18)));
   }
 
   // Grouped by repo: a shaded repo header above each group's first row.
@@ -239,31 +361,41 @@ export default class GithubPrs extends View {
     const d = this.data;
     const cooling = Date.now() - this.fetchedAt < COOLDOWN;
     const body = v_flex().id("gp-body").w(PANEL_W).p(10).gap(10).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
-      .text_size(12).text_color(t.foreground);
+      .text_size(12).text_color(t.foreground)
+      .track_focus(this.handle).on_key_down((e, cx) => this.onKey(e, cx))
+      .on_mouse_down("left", (_e, cx) => { // a click in the card also hands it the arrow keys (and keeps it open until Esc or a click outside)
+        if (!this.kbd) { this.kbd = true; this.selUrl ??= this.flat()[0]?.url ?? null; }
+        this.handle.focus(); cx.notify();
+      });
+    this.partOf.clear();
+    const head = h_flex().gap(8).items_center().px(2)
+      .child(div().flex_1())
+      .child(h_flex().id("gp-profile").gap(8).items_center().h(24).px(4).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Switch account")
+        .on_click((_e, cx) => this.showAccounts(cx))
+        .child(this.avatar(this.login(), 20, t))
+        .child(div().truncate().text_size(12).text_color(t.foreground).child(this.login())))
+      .child(iconButton("gp-settings", "gear", "Settings", (cx) => { this.panel = "settings"; cx.notify(); }, t));
+    const foot = h_flex().gap(8).items_center().px(2)
+      .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(this.error ? (t.ansi1 ?? t.blocked) : t.dim)
+        .child(this.error ?? (d ? `Updated ${new Date(this.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · click a PR to open it` : "Loading…")))
+      .child(iconButton("gp-refresh", "refresh", cooling ? "Refreshing…" : "Refresh now", (cx) => { this.fetch(cx); cx.notify(); }, t, !cooling));
+    body.child(head).child(rule(t));
     if (d) {
       const parts = [];
       const heights = [];
       const rowsOf = (l) => l.length + (prefs().sort === "repo" ? new Set(l.map((p) => p.repo)).size * 0.7 : 0); // group headings
-      const add = (node, n) => { if (parts.length) parts.push(rule(t)); parts.push(node); heights.push(HEAD_H + Math.max(1, n) * ROW_H); };
+      const add = (node, n, list = []) => { if (parts.length) parts.push(rule(t)); list.forEach((p) => this.partOf.set(p.url, parts.length)); parts.push(node); heights.push(HEAD_H + Math.max(1, n) * ROW_H); };
       if (this.finished.length) add(this.cleanSection(t), this.finished.length);
-      add(this.section("Review requested", d.review, "r", () => [], t), rowsOf(d.review));
-      add(this.section("My PRs", d.mine, "m", (p) => p.reasons, t, d.fix ? `${d.fix} to fix` : null), rowsOf(d.mine));
-      add(this.section("Also involving me", d.other, "o", () => [], t), rowsOf(d.other));
+      add(this.section("Review requested", d.review, "r", () => [], t), rowsOf(d.review), d.review);
+      add(this.section("My PRs", d.mine, "m", (p) => p.reasons, t, d.fix ? `${d.fix} to fix` : null), rowsOf(d.mine), d.mine);
+      add(this.section("Also involving me", d.other, "o", () => [], t), rowsOf(d.other), d.other);
       if (!d.review.length && !d.mine.length && !d.other.length) parts.unshift(div().px(6).text_color(t.dim).child(`No open PRs for ${this.login()}.`));
       const h = heights.reduce((a, b) => a + b, 0) + (heights.length - 1) * SECTION_GAP;
-      body.child(v_flex().id("gp-list").w_full().gap(10).h(Math.min(MAX_LIST_H, h)).overflow_y_scrollbar().children(parts));
+      body.child(v_flex().id("gp-list").track_scroll(this.scroll).w_full().gap(10).h(Math.min(MAX_LIST_H, h)).overflow_y_scrollbar().children(parts));
     } else {
       body.child(div().text_color(t.dim).child(this.error ?? "Loading…"));
     }
-    return body.child(rule(t))
-      .child(h_flex().gap(8).items_center().px(2)
-        .child(this.avatar(this.login(), 20, t))
-        .child(v_flex().flex_1().min_w(0)
-          .child(div().truncate().text_size(12).text_color(t.foreground).child(this.login()))
-          .child(div().truncate().text_size(10.5).text_color(this.error ? (t.ansi1 ?? t.blocked) : t.dim)
-            .child(this.error ?? (d ? `Updated ${new Date(this.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · click a PR to open it` : "Loading…"))))
-        .child(iconButton("gp-refresh", "refresh", cooling ? "Refreshing…" : "Refresh now", (cx) => { this.fetch(cx); cx.notify(); }, t, !cooling))
-        .child(iconButton("gp-settings", "gear", "Settings", (cx) => { this.panel = "settings"; cx.notify(); }, t)));
+    return body.child(rule(t)).child(foot);
   }
 
   // ---------- settings: where your repos live ----------
@@ -273,6 +405,14 @@ export default class GithubPrs extends View {
       const folder = await pickFolder({ prompt: "Add" });
       const roots = rootsOf(currentLogin());
       if (folder && !roots.includes(folder)) setRoots(currentLogin(), [...roots, folder]);
+      cx.notify();
+    });
+  }
+
+  pickWorktreeDir(cx) {
+    cx.spawn(async (cx) => {
+      const folder = await pickFolder({ prompt: "Use" });
+      if (folder) setShared(KEY_PREFS, { ...prefs(), worktreeDir: folder });
       cx.notify();
     });
   }
@@ -293,16 +433,12 @@ export default class GithubPrs extends View {
       .fallback(AvatarFallback.new().size_full().flex().items_center().justify_center().text_size(size * 0.4).text_color(t.dim).child(initials));
   }
 
-  settings(t) {
-    const roots = rootsOf(currentLogin());
-    const label = (text) => div().px(2).pt(4).text_size(10.5).font_semibold().text_color(t.dim).child(text.toUpperCase());
-    const hint = (text) => div().px(2).text_size(11).text_color(t.dim).child(text);
-    const field = (state) => div().px(8).h(28).flex().items_center().rounded(6).border(1).border_color(t.border).bg(t.raised).child(Input.new(state));
+  accountsPanel(t) {
     const chosen = prefs().account;
     const acct = (id, login, sub, i) =>
       h_flex().id(`gp-acct-${i}`).gap(8).items_center().px(8).h(36).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
         .when(chosen === id, (e) => e.bg(t.selected))
-        .on_click((_e, cx) => this.setAccount(id, cx))
+        .on_click((_e, cx) => { this.setAccount(id, cx); this.panel = "list"; })
         .child(this.avatar(login, 24, t))
         .child(v_flex().flex_1().min_w(0)
           .child(div().truncate().text_color(t.foreground).child(login || "—"))
@@ -312,13 +448,23 @@ export default class GithubPrs extends View {
       .text_size(12).text_color(t.foreground)
       .child(h_flex().gap(6).items_center().h(24)
         .child(iconButton("gp-back", "back", "Back", (cx) => { this.panel = "list"; cx.notify(); }, t))
-        .child(div().font_semibold().text_size(13).child("Settings")))
-      .child(label("GitHub account"))
+        .child(div().font_semibold().text_size(13).child("GitHub account")))
       .child(v_flex().gap(2)
         .child(acct("", this.accounts[0] ?? "", "Follow gh's active account", -1))
         .children(this.accounts.map((a, i) => acct(a, a, "Use this login only", i))))
-      .child(hint("Nothing is switched globally. The login's token lives only inside the helper process."))
-      .child(rule(t))
+      .child(div().px(2).text_size(11).text_color(t.dim).child("Nothing is switched globally. The login's token lives only inside the helper process."));
+  }
+
+  settings(t) {
+    const roots = rootsOf(currentLogin());
+    const label = (text) => div().px(2).pt(4).text_size(10.5).font_semibold().text_color(t.dim).child(text.toUpperCase());
+    const hint = (text) => div().px(2).text_size(11).text_color(t.dim).child(text);
+    const field = (state) => div().px(8).h(28).flex().items_center().rounded(6).border(1).border_color(t.border).bg(t.raised).child(Input.new(state));
+    return v_flex().id("gp-body").w(PANEL_W).p(12).gap(8).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
+      .text_size(12).text_color(t.foreground)
+      .child(h_flex().gap(6).items_center().h(24)
+        .child(iconButton("gp-back", "back", "Back", (cx) => { this.panel = "list"; cx.notify(); }, t))
+        .child(div().font_semibold().text_size(13).child("Settings")))
       .child(label("Sort"))
       .child(h_flex().gap(4).children([["attention", "Needs attention first"], ["recent", "Recent activity"], ["repo", "By repo"]].map(([id, name]) =>
         div().id(`gp-sort-${id}`).flex_1().h(26).rounded(6).flex().items_center().justify_center().cursor_pointer()
@@ -340,6 +486,15 @@ export default class GithubPrs extends View {
       .child(hint("Never show these"))
       .child(field(this.excludeInput))
       .child(rule(t))
+      .child(label("Worktree folder"))
+      .child(hint("Where new PR checkouts go, as <folder>/<repo>/<branch>. Existing worktrees stay where they are."))
+      .child(h_flex().gap(6).items_center()
+        .child(div().flex_1().min_w(0).truncate().px(8).h(28).flex().items_center().rounded(6).bg(t.raised).child(prefs().worktreeDir || "~/.herdr/worktrees (default)"))
+        .child(div().id("gp-wt-pick").px(8).h(28).flex().items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover)).text_color(t.accent)
+          .on_click((_e, cx) => this.pickWorktreeDir(cx)).child("Choose…"))
+        .when(!!prefs().worktreeDir, (e) => e.child(div().id("gp-wt-reset").px(8).h(28).flex().items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover)).text_color(t.dim)
+          .on_click((_e, cx) => { setShared(KEY_PREFS, { ...prefs(), worktreeDir: "" }); cx.notify(); }).child("Reset"))))
+      .child(rule(t))
       .child(label(`Git folders for ${this.login()}`))
       .child(hint("Searched three levels deep for a PR's repo. Folders of your open spaces are always searched too."))
       .child(v_flex().gap(1).children(roots.map((r, i) =>
@@ -358,6 +513,7 @@ export default class GithubPrs extends View {
 
   initMenu(cx) {
     this.menu = true;
+    this.at = 0; // highlighted row, for the arrow keys
     this.agents = shared(KNOWN_AGENTS)?.[""] ?? []; // Herdr's last list, shown at once
     cx.timer.every(500, () => setShared(KEY_BEAT, Date.now()));
     this.handle = cx.focus_handle();
@@ -386,21 +542,18 @@ export default class GithubPrs extends View {
       setShared(KEY_REQ, { at: Date.now(), pr, agent: agent ? { name: agent.name, run: agent.run, key: agent.key } : null });
     };
     const browser = () => { close(); setShared(KEY_REQ, { at: Date.now(), pr, browser: true }); };
+    const rows = this.menuRows(pr, agents, t, open, browser);
+    const back = props().top ? "right" : "left"; // the arrow toward the card
     return v_flex().min_h(0).w_full().h(menuHeight(agents.length)).bg(t.popover).p(5).text_size(12.8)
       .id("gp-menu").track_focus(this.handle)
-      .on_key_down((e) => {
+      .on_key_down((e, cx) => {
         if (e.modifiers.control || e.modifiers.platform || e.modifiers.alt) return;
-        if (e.key === "b") return browser();
-        if (e.key === "t") return open(null);
-        const agent = /^[1-9]$/.test(e.key) ? agents[Number(e.key) - 1] : null;
-        if (agent) open(agent);
+        if (e.key === "down" || e.key === "up") { this.at = (this.at + (e.key === "down" ? 1 : rows.length - 1)) % rows.length; return cx.notify(); }
+        if (e.key === "enter") return rows[this.at]?.run();
+        if (e.key === back) return close();
+        rows.find((r) => r.hint === e.key)?.run();
       })
-      .child(div().px(9).pt(6).pb(4).text_size(11).text_color(t.dim).truncate().child(`${pr.repo.split("/").pop()}#${pr.number} · ${pr.title}`))
-      .child(this.menuRow("gp-browser", svg(`mods/${MOD}/icons/github.svg`).size(14), "Open in browser", "b", browser, t))
-      .child(this.menuRow("gp-terminal", svg("icons/shell.svg").size(14), "Terminal in checkout", "t", () => open(null), t))
-      .child(div().px(9).pt(8).pb(4).text_size(11).text_color(t.dim).child("Start an agent in the checkout"))
-      .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar()
-        .children(agents.map((a, i) => this.menuRow(`gp-${a.key}`, a.tint ? svg(a.icon).size(14).text_color(t.foreground) : image(a.icon).size(14), a.name, i < 9 ? String(i + 1) : "", () => open(a), t))));
+      .children(this.menuChildren(pr, rows, t));
   }
 
   render(cx) {
@@ -409,10 +562,12 @@ export default class GithubPrs extends View {
     if (req && req.at !== this.seenReq) {
       this.seenReq = req.at;
       this.pinMenu = false;
+      if (this.kbd) { this.kbd = false; this.open = false; this.panel = "list"; this.menuPr = null; }
       this.touch(cx);
       if (req.browser) exec("open", [req.pr.url]).catch(() => {});
       else openPr(req.pr, req.agent);
     }
+    try { const v = window.viewport_size(); this.vw = v.width; this.vh = v.height; } catch { /* keep the last size */ }
     return this.renderBar();
   }
 }

@@ -14,6 +14,7 @@ assert.deepEqual(wts, [{ path: "/r/main", branch: "main" }, { path: "/w/feat", b
 assert.equal(branchFor({ number: 7, headRef: "feat/x", cross: false }), "feat/x");
 assert.equal(branchFor({ number: 7, headRef: "main", cross: true }), "pr-7");
 assert.equal(worktreePath("/h", "widgets", "ISSUE-1/fix it"), "/h/.herdr/worktrees/widgets/ISSUE-1-fix-it");
+assert.equal(worktreePath("/h", "widgets", "a/b", "/data/wt/"), "/data/wt/widgets/a-b");
 
 const spaces = [{ id: "s1", tabs: [{ id: "t1" }], folder: "/r/main" }, { id: "s2", tabs: [{ id: "t2" }], folder: "/x" }, { id: "s3", machine: "mini", tabs: [], folder: "/w/x" }];
 const panes = [{ tab: "t1", cwd: "/r/main" }, { tab: "t2", cwd: "/w/x/sub" }];

@@ -10,7 +10,7 @@ export const currentLogin = () => prefs().account || shared(KEY_ACTIVE) || "";
 // Git folders belong to a gh account. Before any per-account setting, the old single `roots` list applies to all.
 export const rootsOf = (login) => prefs().folders?.[login] ?? (prefs().folders ? [] : prefs().roots);
 export const setRoots = (login, roots) => { const { roots: _old, ...p } = prefs(); setShared(KEY_PREFS, { ...p, folders: { ...(p.folders ?? {}), [login]: roots } }); };
-export const prefs = () => ({ roots: [], account: "", everyMin: 3, sort: "attention", include: [], exclude: [], ...(shared(KEY_PREFS) ?? {}) });
+export const prefs = () => ({ roots: [], account: "", everyMin: 3, sort: "attention", worktreeDir: "", include: [], exclude: [], ...(shared(KEY_PREFS) ?? {}) });
 
 const git = async (cwd, args, timeout) => {
   const r = await exec("git", args, { cwd, timeout });
@@ -44,7 +44,7 @@ export async function openPr(pr, agent) {
 
     let at = wts.find((w) => w.branch === branch);
     if (!at) {
-      const path = worktreePath(home(), main.split("/").pop(), branch);
+      const path = worktreePath(home(), main.split("/").pop(), branch, prefs().worktreeDir);
       notify({ title: `Checking out ${label}`, body: path, level: "info", timeout: 5000 });
       // A half-made worktree from an interrupted attempt is finished, not duplicated.
       if (!wts.some((w) => w.path === path)) {
