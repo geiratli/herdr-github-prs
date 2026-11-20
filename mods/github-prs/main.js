@@ -104,7 +104,7 @@ export default class GithubPrs extends View {
       const n = i < 0 ? 0 : (i + (e.key === "down" ? 1 : list.length - 1)) % list.length;
       this.selUrl = list[n].url;
       this.scroll.scroll_to_item(this.partOf.get(this.selUrl) ?? 0);
-    } else if (e.key === "enter" && i >= 0) {
+    } else if ((e.key === "enter" || e.key === "right") && i >= 0) { // → steps into the actions, like Enter
       this.actionPr = list[i]; this.actionAt = 0; this.panel = "actions"; this.grab(cx);
       cx.spawn(async (cx) => { try { this.agents = await knownAgents(); } catch { /* keep the cached list */ } cx.notify(); });
     } else if (e.key === "escape") return this.closeKeyboard(cx);
@@ -129,7 +129,7 @@ export default class GithubPrs extends View {
     const rows = this.actionList(theme());
     if (e.key === "down" || e.key === "up") this.actionAt = (this.actionAt + (e.key === "down" ? 1 : rows.length - 1)) % rows.length;
     else if (e.key === "enter") return rows[this.actionAt]?.run(cx);
-    else if (e.key === "escape") { this.panel = "list"; this.grab(cx); }
+    else if (e.key === "escape" || e.key === "left") { this.panel = "list"; this.grab(cx); } // ← steps back out of the panel
     else { const r = rows.find((x) => x.hint === e.key); if (r) return r.run(cx); }
     cx.notify();
   }
