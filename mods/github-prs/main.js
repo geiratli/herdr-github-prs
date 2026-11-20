@@ -5,8 +5,8 @@
 //
 // The same mod is also the click menu: opened as a popup, `props().pr` is set and it draws that.
 import { View, div, svg, image } from "gpui-kit";
-import { Avatar, AvatarFallback, AvatarImage, Popover, Input, InputState, h_flex, v_flex } from "gpui-base";
-import { exec, theme, appHome, props, shared, setShared, openOverlay, closeOverlay, knownAgents, pickFolder } from "herdr";
+import { Avatar, AvatarFallback, AvatarImage, Popover, Input, InputState, ScrollHandle, h_flex, v_flex } from "gpui-base";
+import { exec, theme, appHome, props, shared, setShared, openOverlay, closeOverlay, knownAgents, pickFolder, nextCommand } from "herdr";
 import { parseList, summarize } from "./lib/model.js";
 import { KEY_ACTIVE, KEY_PREFS, currentLogin, finishedWorktrees, gh, openPr, prefs, removeWorktree, rootsOf, setRoots } from "./lib/actions.js";
 
@@ -19,6 +19,7 @@ const EVERY_CHOICES = [1, 3, 5, 10, 30]; // minutes between fetches, as offered 
 const COOLDOWN = 15 * 1000;    // ms, manual refresh
 const PANEL_W = 600;
 const MENU_W = 260;
+const MENU_SHIFT = 24;          // measured, not derived: below a top bar the popup landed ~24px right of where cardLeft says
 const CARD_INSET = 12;          // card padding (10) + border (1) + row margin (1): row left edge → card left edge
 const menuHeight = (agents) => Math.min(491, 90 + (2 + agents) * 31); // browser + terminal rows, then the agents
 const MAX_LIST_H = 640;        // px; the list scrolls past this (a mod can't read the window height)
@@ -51,6 +52,14 @@ export default class GithubPrs extends View {
     this.over = { trigger: false, card: false };
     this.seq = 0;          // bumps on every hover change, so stale timers do nothing
     this.keepOpenUntil = 0; // the click that opens the account panel also toggles the popover: ignore that close
+    this.handle = cx.focus_handle(); // keyboard: the card takes it when opened with the key (keys.json → github-prs.toggle)
+    this.scroll = ScrollHandle.new();
+    this.partOf = new Map(); // PR url → index of its section in the list, to scroll the selection into view
+    this.kbd = false;      // opened with the key: stays until Escape, a pick, or a click outside
+    this.selUrl = null;    // keyboard selection (by url, so it survives a refresh)
+    this.actionPr = null;  // the PR whose action panel is showing
+    this.actionAt = 0;
+    this.agents = shared(KNOWN_AGENTS)?.[""] ?? [];
     this.pinMenu = false;  // the click menu is open: the card stays until something is picked
     // Comma-separated "org" or "org/repo" lists; saved as you type.
     const list = (key) => {
@@ -63,6 +72,76 @@ export default class GithubPrs extends View {
     this.seenReq = shared(KEY_REQ)?.at ?? 0;
     this.fetch(cx);
     cx.timer.every(60 * 1000, (cx) => { if (Date.now() - this.fetchedAt >= prefs().everyMin * 60 * 1000) this.fetch(cx); });
+    cx.spawn(async (cx) => { for (;;) { if (await nextCommand() === "toggle") this.toggleKeyboard(cx); } });
+  }
+
+  // ---------- keyboard ----------
+
+  flat() { const d = this.data; return d ? [...d.review, ...d.mine, ...d.other] : []; } // the order the card shows
+
+  toggleKeyboard(cx) {
+    if (this.open && this.kbd) return this.closeKeyboard(cx);
+    this.kbd = true; this.open = true; this.panel = "list";
+    this.selUrl = this.flat()[0]?.url ?? null;
+    cx.timer.after(80, () => this.handle.focus()); // after the card has been drawn
+    cx.notify();
+  }
+
+  closeKeyboard(cx) { this.kbd = false; this.open = false; this.panel = "list"; cx.notify(); }
+
+  onKey(e, cx) {
+    if (e.modifiers.control || e.modifiers.platform || e.modifiers.alt) return;
+    if (this.panel === "actions") return this.actionKey(e, cx);
+    const list = this.flat();
+    const i = list.findIndex((p) => p.url === this.selUrl);
+    if (e.key === "down" || e.key === "up") {
+      if (!list.length) return;
+      const n = i < 0 ? 0 : (i + (e.key === "down" ? 1 : list.length - 1)) % list.length;
+      this.selUrl = list[n].url;
+      this.scroll.scroll_to_item(this.partOf.get(this.selUrl) ?? 0);
+    } else if (e.key === "enter" && i >= 0) {
+      this.actionPr = list[i]; this.actionAt = 0; this.panel = "actions";
+      cx.spawn(async (cx) => { try { this.agents = await knownAgents(); } catch { /* keep the cached list */ } cx.notify(); });
+    } else if (e.key === "escape") return this.closeKeyboard(cx);
+    cx.notify();
+  }
+
+  // What the click menu offers, as rows the keyboard can walk; each hint is also a key.
+  actionList(t) {
+    const go = (extra) => (cx) => { setShared(KEY_REQ, { at: Date.now(), pr: this.actionPr, ...extra }); this.closeKeyboard(cx); };
+    return [
+      { id: "browser", name: "Open in browser", hint: "b", icon: svg(`mods/${MOD}/icons/github.svg`).size(14), run: go({ browser: true }) },
+      { id: "terminal", name: "Terminal in checkout", hint: "t", icon: svg("icons/shell.svg").size(14), run: go({ agent: null }) },
+      ...this.agents.filter((a) => a.installed).map((a, i) => ({
+        id: a.key, name: a.name, hint: i < 9 ? String(i + 1) : "",
+        icon: a.tint ? svg(a.icon).size(14).text_color(t.foreground) : image(a.icon).size(14),
+        run: go({ agent: { name: a.name, run: a.run, key: a.key } }),
+      })),
+    ];
+  }
+
+  actionKey(e, cx) {
+    const rows = this.actionList(theme());
+    if (e.key === "down" || e.key === "up") this.actionAt = (this.actionAt + (e.key === "down" ? 1 : rows.length - 1)) % rows.length;
+    else if (e.key === "enter") return rows[this.actionAt]?.run(cx);
+    else if (e.key === "escape") this.panel = "list";
+    else { const r = rows.find((x) => x.hint === e.key); if (r) return r.run(cx); }
+    cx.notify();
+  }
+
+  actionsPanel(t) {
+    const pr = this.actionPr;
+    return v_flex().id("gp-body").track_focus(this.handle).on_key_down((e, cx) => this.onKey(e, cx))
+      .w(PANEL_W).p(10).gap(4).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
+      .text_size(12.8).text_color(t.foreground)
+      .child(h_flex().gap(6).items_center().h(24).px(2)
+        .child(iconButton("gp-back", "back", "Back", (cx) => { this.panel = "list"; cx.notify(); }, t))
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(`${pr.repo.split("/").pop()}#${pr.number} · ${pr.title}`)))
+      .children(this.actionList(t).map((r, i) =>
+        h_flex().id(`gp-act-${r.id}`).h(31).px(9).gap(10).rounded(7).items_center().flex_none().text_color(t.foreground)
+          .when(i === this.actionAt, (e) => e.bg(t.selected)).hover((s) => s.bg(t.selected)).cursor_pointer()
+          .on_click((_e, cx) => r.run(cx))
+          .child(r.icon).child(div().flex_1().child(r.name)).child(div().text_size(11).text_color(t.dim).child(r.hint))));
   }
 
   // Card visibility: open after resting on the chip, close shortly after the pointer leaves both
@@ -75,7 +154,7 @@ export default class GithubPrs extends View {
     } else if (!over() && this.open) {
       const tryClose = (cx) => {
         if (seq !== this.seq || over()) return;
-        if (this.menuUp() || this.panel !== "list") return cx.timer.after(600, tryClose); // look again later
+        if (this.menuUp() || this.kbd || this.panel !== "list") return cx.timer.after(600, tryClose); // look again later
         this.open = false; cx.notify();
       };
       cx.timer.after(CLOSE_DELAY, tryClose);
@@ -165,9 +244,9 @@ export default class GithubPrs extends View {
       .child(Popover.new("gp-panel").anchor(this.top ? "top_right" : "bottom_right")
         .open(this.open).overlay_closable(!this.menuUp())
         .on_open_change((open, cx) => { if (!open && (this.menuUp() || Date.now() < this.keepOpenUntil)) return; // a press in the click menu is "outside" to the card
-          this.open = open; if (!open) this.panel = "list"; cx.notify(); })
+          this.open = open; if (!open) { this.panel = "list"; this.kbd = false; } cx.notify(); })
         .trigger(div().id("gp-trigger").on_hover((on, cx) => this.hover("trigger", on, cx)).child(content))
-        .content((this.panel === "settings" ? this.settings(t) : this.panel === "accounts" ? this.accountsPanel(t) : this.card(t)).on_hover((on, cx) => this.hover("card", on, cx))));
+        .content((this.panel === "settings" ? this.settings(t) : this.panel === "accounts" ? this.accountsPanel(t) : this.panel === "actions" ? this.actionsPanel(t) : this.card(t)).on_hover((on, cx) => this.hover("card", on, cx))));
   }
 
   // ---------- hover card ----------
@@ -184,9 +263,9 @@ export default class GithubPrs extends View {
     const rowH = e.bounds?.height ?? 28;
     const cardLeft = rowX - CARD_INSET; // rows start CARD_INSET inside the card's left edge
     // Top bar: the menu goes left of the card; on a narrow window it shrinks to the room there is (min 200) instead of sliding under the card.
-    const width = this.top ? Math.max(200, Math.min(MENU_W, Math.round(cardLeft - 16))) : MENU_W;
+    const width = this.top ? Math.max(200, Math.min(MENU_W, Math.round(cardLeft - 16 - MENU_SHIFT))) : MENU_W;
     const at = this.top
-      ? { x: Math.max(8, Math.round(cardLeft - width - 8)), y: Math.round(rowY) }
+      ? { x: Math.max(8, Math.round(cardLeft - width - 8 - MENU_SHIFT)), y: Math.round(rowY) }
       : { x: Math.round(cardLeft + PANEL_W + 8), y: Math.max(8, Math.round(rowY + rowH - height)) };
     // A click inside the card doesn't dismiss an open popup, so a second click would stack another.
     if (this.menuId) try { closeOverlay(this.menuId); } catch { /* already closed */ }
@@ -198,6 +277,7 @@ export default class GithubPrs extends View {
   prRow(p, i, key, tags, t) {
     return h_flex().id(`gp-${key}-${i}`).gap(8).items_center().px(6).py(4).rounded(5).cursor_pointer()
       .hover((s) => s.bg(t.hover))
+      .when(this.kbd && p.url === this.selUrl, (e) => e.bg(t.selected))
       .tooltip(`${p.title}\n${p.repo}#${p.number}`)
       .on_mouse_down("left", (e) => this.pick(e, p))
       .child(div().size(7).flex_none().rounded_full().bg(ciColor(p.ci, t)).tooltip(p.ci ? `CI: ${p.ci.toLowerCase()}` : "No CI"))
@@ -249,7 +329,9 @@ export default class GithubPrs extends View {
     const d = this.data;
     const cooling = Date.now() - this.fetchedAt < COOLDOWN;
     const body = v_flex().id("gp-body").w(PANEL_W).p(10).gap(10).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
-      .text_size(12).text_color(t.foreground);
+      .text_size(12).text_color(t.foreground)
+      .track_focus(this.handle).on_key_down((e, cx) => this.onKey(e, cx));
+    this.partOf.clear();
     const head = h_flex().gap(8).items_center().px(2)
       .child(div().flex_1())
       .child(h_flex().id("gp-profile").gap(8).items_center().h(24).px(4).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Switch account")
@@ -266,14 +348,14 @@ export default class GithubPrs extends View {
       const parts = [];
       const heights = [];
       const rowsOf = (l) => l.length + (prefs().sort === "repo" ? new Set(l.map((p) => p.repo)).size * 0.7 : 0); // group headings
-      const add = (node, n) => { if (parts.length) parts.push(rule(t)); parts.push(node); heights.push(HEAD_H + Math.max(1, n) * ROW_H); };
+      const add = (node, n, list = []) => { if (parts.length) parts.push(rule(t)); list.forEach((p) => this.partOf.set(p.url, parts.length)); parts.push(node); heights.push(HEAD_H + Math.max(1, n) * ROW_H); };
       if (this.finished.length) add(this.cleanSection(t), this.finished.length);
-      add(this.section("Review requested", d.review, "r", () => [], t), rowsOf(d.review));
-      add(this.section("My PRs", d.mine, "m", (p) => p.reasons, t, d.fix ? `${d.fix} to fix` : null), rowsOf(d.mine));
-      add(this.section("Also involving me", d.other, "o", () => [], t), rowsOf(d.other));
+      add(this.section("Review requested", d.review, "r", () => [], t), rowsOf(d.review), d.review);
+      add(this.section("My PRs", d.mine, "m", (p) => p.reasons, t, d.fix ? `${d.fix} to fix` : null), rowsOf(d.mine), d.mine);
+      add(this.section("Also involving me", d.other, "o", () => [], t), rowsOf(d.other), d.other);
       if (!d.review.length && !d.mine.length && !d.other.length) parts.unshift(div().px(6).text_color(t.dim).child(`No open PRs for ${this.login()}.`));
       const h = heights.reduce((a, b) => a + b, 0) + (heights.length - 1) * SECTION_GAP;
-      body.child(v_flex().id("gp-list").w_full().gap(10).h(Math.min(MAX_LIST_H, h)).overflow_y_scrollbar().children(parts));
+      body.child(v_flex().id("gp-list").track_scroll(this.scroll).w_full().gap(10).h(Math.min(MAX_LIST_H, h)).overflow_y_scrollbar().children(parts));
     } else {
       body.child(div().text_color(t.dim).child(this.error ?? "Loading…"));
     }
