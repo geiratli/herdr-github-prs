@@ -183,14 +183,16 @@ export default class GithubPrs extends View {
     const rowY = e.position.y - (e.local_position?.y ?? 0);
     const rowH = e.bounds?.height ?? 28;
     const cardLeft = rowX - CARD_INSET; // rows start CARD_INSET inside the card's left edge
+    // Top bar: the menu goes left of the card; on a narrow window it shrinks to the room there is (min 200) instead of sliding under the card.
+    const width = this.top ? Math.max(200, Math.min(MENU_W, Math.round(cardLeft - 16))) : MENU_W;
     const at = this.top
-      ? { x: Math.max(8, Math.round(cardLeft - MENU_W - 8)), y: Math.round(rowY) }
+      ? { x: Math.max(8, Math.round(cardLeft - width - 8)), y: Math.round(rowY) }
       : { x: Math.round(cardLeft + PANEL_W + 8), y: Math.max(8, Math.round(rowY + rowH - height)) };
     // A click inside the card doesn't dismiss an open popup, so a second click would stack another.
     if (this.menuId) try { closeOverlay(this.menuId); } catch { /* already closed */ }
     this.pinMenu = true;
     setShared(KEY_BEAT, Date.now());
-    this.menuId = openOverlay({ mod: MOD, kind: "popup", width: MENU_W, height, at, props: { pr: p } });
+    this.menuId = openOverlay({ mod: MOD, kind: "popup", width, height, at, props: { pr: p } });
   }
 
   prRow(p, i, key, tags, t) {
