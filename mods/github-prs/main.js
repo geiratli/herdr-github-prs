@@ -54,6 +54,8 @@ export default class GithubPrs extends View {
     this.over = { trigger: false, card: false };
     this.seq = 0;          // bumps on every hover change, so stale timers do nothing
     this.keepOpenUntil = 0; // the click that opens the account panel also toggles the popover: ignore that close
+    // Enter never arrives as a plain key press (something earlier takes it), so it is bound as an action in the card's own context.
+    cx.bind_keys([{ keystroke: "enter", action: "gp-enter", context: "GithubPrsCard" }]);
     this.handle = cx.focus_handle(); // keyboard: the card takes it when opened with the key (keys.json → github-prs.toggle)
     this.scroll = ScrollHandle.new();
     this.partOf = new Map(); // PR url → index of its section in the list, to scroll the selection into view
@@ -379,7 +381,8 @@ export default class GithubPrs extends View {
     const cooling = Date.now() - this.fetchedAt < COOLDOWN;
     const body = v_flex().id("gp-body").on_size_change((sz) => { this.cardH = sz.height; }).w(PANEL_W).p(10).gap(10).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
       .text_size(12).text_color(t.foreground)
-      .track_focus(this.handle).on_key_down((e, cx) => this.onKey(e, cx))
+      .track_focus(this.handle).key_context("GithubPrsCard").on_key_down((e, cx) => this.onKey(e, cx))
+      .on_action("gp-enter", (_e, cx) => this.onKey({ key: "enter", modifiers: {} }, cx))
       .on_mouse_down("left", (_e, cx) => { // a click in the card also hands it the arrow keys (and keeps it open until Esc or a click outside)
         if (!this.kbd) { this.kbd = true; this.selUrl ??= this.flat()[0]?.url ?? null; }
         this.handle.focus(); cx.notify();
