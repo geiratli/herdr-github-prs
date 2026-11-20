@@ -83,8 +83,13 @@ export default class GithubPrs extends View {
     if (this.open && this.kbd) return this.closeKeyboard(cx);
     this.kbd = true; this.open = true; this.panel = "list";
     this.selUrl = this.flat()[0]?.url ?? null;
-    cx.timer.after(80, () => this.handle.focus()); // after the card has been drawn
+    this.grab(cx);
     cx.notify();
+  }
+
+  // Take the keyboard once the card (or its next panel) has been drawn; retry, as the popover may settle after us.
+  grab(cx) {
+    for (const ms of [80, 300, 700]) cx.timer.after(ms, () => { if (this.kbd && !this.handle.is_focused()) this.handle.focus(); });
   }
 
   closeKeyboard(cx) { this.kbd = false; this.open = false; this.panel = "list"; cx.notify(); }
@@ -100,7 +105,7 @@ export default class GithubPrs extends View {
       this.selUrl = list[n].url;
       this.scroll.scroll_to_item(this.partOf.get(this.selUrl) ?? 0);
     } else if (e.key === "enter" && i >= 0) {
-      this.actionPr = list[i]; this.actionAt = 0; this.panel = "actions";
+      this.actionPr = list[i]; this.actionAt = 0; this.panel = "actions"; this.grab(cx);
       cx.spawn(async (cx) => { try { this.agents = await knownAgents(); } catch { /* keep the cached list */ } cx.notify(); });
     } else if (e.key === "escape") return this.closeKeyboard(cx);
     cx.notify();
@@ -124,7 +129,7 @@ export default class GithubPrs extends View {
     const rows = this.actionList(theme());
     if (e.key === "down" || e.key === "up") this.actionAt = (this.actionAt + (e.key === "down" ? 1 : rows.length - 1)) % rows.length;
     else if (e.key === "enter") return rows[this.actionAt]?.run(cx);
-    else if (e.key === "escape") this.panel = "list";
+    else if (e.key === "escape") { this.panel = "list"; this.grab(cx); }
     else { const r = rows.find((x) => x.hint === e.key); if (r) return r.run(cx); }
     cx.notify();
   }
