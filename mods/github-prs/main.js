@@ -20,6 +20,7 @@ const COOLDOWN = 15 * 1000;    // ms, manual refresh
 const PANEL_W = 600;
 const MENU_W = 260;
 const CARD_MARGIN = 54, CARD_TOP = 36; // estimates for opening the menu from the keyboard: the card's gap to the window's right edge, and its top
+const LIST_TOP = 56;            // card top → list top: border 1 + padding 10 + header 24 + gaps/rule 21
 const MENU_SHIFT = 24;          // measured, not derived: below a top bar the popup landed ~24px right of where cardLeft says
 const CARD_INSET = 12;          // card padding (10) + border (1) + row margin (1): row left edge → card left edge
 const menuHeight = (agents) => Math.min(491, 90 + (2 + agents) * 31); // browser + terminal rows, then the agents
@@ -53,6 +54,8 @@ export default class GithubPrs extends View {
     this.over = { trigger: false, card: false };
     this.seq = 0;          // bumps on every hover change, so stale timers do nothing
     this.keepOpenUntil = 0; // the click that opens the account panel also toggles the popover: ignore that close
+    // Enter never arrives as a plain key press (something earlier takes it), so it is bound as an action in the card's own context.
+    cx.bind_keys([{ keystroke: "enter", action: "gp-enter", context: "GithubPrsCard" }]);
     this.handle = cx.focus_handle(); // keyboard: the card takes it when opened with the key (keys.json → github-prs.toggle)
     this.scroll = ScrollHandle.new();
     this.partOf = new Map(); // PR url → index of its section in the list, to scroll the selection into view
@@ -60,6 +63,9 @@ export default class GithubPrs extends View {
     this.selUrl = null;    // keyboard selection (by url, so it survives a refresh)
     this.menuPr = null;    // keyboard: the PR whose action menu is drawn left of the card (top bar)
     this.at = 0;           // highlighted row in that menu
+    this.sizes = new Map(); // PR url → measured row height
+    this.rowY = new Map();  // PR url → row top, from the top of the list (walked while the card is built)
+    this.cursor = 0; this.seen = 0; this.cardH = 0;
     this.agents = shared(KNOWN_AGENTS)?.[""] ?? [];
     this.pinMenu = false;  // the click menu is open: the card stays until something is picked
     // Comma-separated "org" or "org/repo" lists; saved as you type.
@@ -268,10 +274,14 @@ export default class GithubPrs extends View {
   withMenu(t) {
     const rows = this.inlineMenuRows(t);
     const width = Math.max(200, Math.min(MENU_W, Math.round((this.vw || 1200) - PANEL_W - CARD_MARGIN - 16)));
+    const card = this.card(t); // first: it walks the rows and records where each one sits
+    const h = menuHeight(rows.length - 2);
+    const y = LIST_TOP + (this.rowY.get(this.menuPr.url) ?? 0); // level with the row, kept inside the card's height
+    const mt = Math.max(0, this.cardH ? Math.min(y, this.cardH - h) : y);
     return h_flex().gap(8).items_start()
-      .child(v_flex().id("gp-inline-menu").w(width).h(menuHeight(rows.length - 2)).p(5).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
+      .child(v_flex().id("gp-inline-menu").mt(mt).w(width).h(h).p(5).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
         .text_size(12.8).text_color(t.foreground).children(this.menuChildren(this.menuPr, rows, t)))
-      .child(this.card(t));
+      .child(card);
   }
 
   // Press: the menu (browser / terminal / agents), beside the card, never over it: the card is drawn
@@ -304,12 +314,15 @@ export default class GithubPrs extends View {
   }
 
   prRow(p, i, key, tags, t) {
+    this.rowY.set(p.url, this.cursor);
+    this.cursor += (this.sizes.get(p.url) ?? ROW_H) + 2; // + the gap below
     const arrow = (g) => div().flex_none().px(2).text_size(14).text_color(t.muted).tooltip(`Press ${g} for actions`).child(g); // points to where the menu opens
     return h_flex().id(`gp-${key}-${i}`).gap(8).items_center().px(6).py(4).rounded(5).cursor_pointer()
       .when(this.kbd && this.top, (e) => e.child(p.url === this.selUrl ? arrow("←") : div().flex_none().w(18))) // a gap on the other rows, so the text doesn't jump
       .hover((s) => s.bg(t.hover))
       .when(this.kbd && p.url === this.selUrl, (e) => e.bg(t.selected))
       .tooltip(`${p.title}\n${p.repo}#${p.number}`)
+      .on_size_change((sz) => this.sizes.set(p.url, sz.height))
       .on_mouse_down("left", (e, cx) => this.pick(e, p, cx))
       .child(div().size(7).flex_none().rounded_full().bg(ciColor(p.ci, t)).tooltip(p.ci ? `CI: ${p.ci.toLowerCase()}` : "No CI"))
       .child(v_flex().flex_1().min_w(0).gap(2)
@@ -325,13 +338,18 @@ export default class GithubPrs extends View {
   groupRows(list, key, tagsOf, t) {
     const rows = [];
     list.forEach((p, i) => {
-      if (i === 0 || list[i - 1].repo !== p.repo) rows.push(div().mt(i ? 8 : 0).px(6).py(2).rounded(4).bg(t.raised).text_size(11).font_semibold().text_color(t.foreground).truncate().child(p.repo));
+      if (i === 0 || list[i - 1].repo !== p.repo) {
+        this.cursor += (i ? 8 : 0) + 22 + 2; // margin, fixed height, gap
+        rows.push(div().mt(i ? 8 : 0).h(22).px(6).flex().items_center().rounded(4).bg(t.raised).text_size(11).font_semibold().text_color(t.foreground).truncate().child(p.repo));
+      }
       rows.push(this.prRow(p, i, key, tagsOf(p), t));
     });
     return rows;
   }
 
   section(title, list, key, tagsOf, t, extra = null) {
+    this.cursor += (this.seen++ ? SECTION_GAP : 0) + 20 + 2; // gap to the section above, heading, gap
+    if (!list.length) this.cursor += 17 + 2;
     return v_flex().gap(2)
       .child(h_flex().gap(6).items_center().px(6).h(20)
         .child(div().font_semibold().child(title))
@@ -344,6 +362,7 @@ export default class GithubPrs extends View {
 
   // Worktrees this mod made, their PR now merged or closed: a click opens Herdr's own remove dialog.
   cleanSection(t) {
+    this.cursor += (this.seen++ ? SECTION_GAP : 0) + 20 + 2 + this.finished.length * (28 + 2);
     return v_flex().gap(2)
       .child(h_flex().gap(6).items_center().px(6).h(20)
         .child(div().font_semibold().child("Worktrees to clean up")).child(pill(String(this.finished.length), t.dim, t)))
@@ -360,14 +379,15 @@ export default class GithubPrs extends View {
   card(t) {
     const d = this.data;
     const cooling = Date.now() - this.fetchedAt < COOLDOWN;
-    const body = v_flex().id("gp-body").w(PANEL_W).p(10).gap(10).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
+    const body = v_flex().id("gp-body").on_size_change((sz) => { this.cardH = sz.height; }).w(PANEL_W).p(10).gap(10).rounded(8).border(1).border_color(t.border).bg(t.popover).shadow_lg()
       .text_size(12).text_color(t.foreground)
-      .track_focus(this.handle).on_key_down((e, cx) => this.onKey(e, cx))
+      .track_focus(this.handle).key_context("GithubPrsCard").on_key_down((e, cx) => this.onKey(e, cx))
+      .on_action("gp-enter", (_e, cx) => this.onKey({ key: "enter", modifiers: {} }, cx))
       .on_mouse_down("left", (_e, cx) => { // a click in the card also hands it the arrow keys (and keeps it open until Esc or a click outside)
         if (!this.kbd) { this.kbd = true; this.selUrl ??= this.flat()[0]?.url ?? null; }
         this.handle.focus(); cx.notify();
       });
-    this.partOf.clear();
+    this.partOf.clear(); this.rowY.clear(); this.cursor = 0; this.seen = 0;
     const head = h_flex().gap(8).items_center().px(2)
       .child(div().flex_1())
       .child(h_flex().id("gp-profile").gap(8).items_center().h(24).px(4).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Switch account")
